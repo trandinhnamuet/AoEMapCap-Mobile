@@ -1,0 +1,14 @@
+# build Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+*.jks
+*.keystore
+# trạm chuyển tiếp
+relay/node_modules/
+relay/.wrangler/
+relay/.dev.vars
+# ghi chú nội bộ, không đưa lên public
+CLAUDE.md
+docs/

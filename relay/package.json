@@ -1,0 +1,12 @@
+{
+  "name": "aoe-mapcap-relay",
+  "private": true,
+  "type": "module",
+  "description": "Trạm chuyển tiếp AoE-MapCap máy tính <-> điện thoại (Cloudflare Worker + Durable Object)",
+  "scripts": {
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "4.20.0"
+  }
+}

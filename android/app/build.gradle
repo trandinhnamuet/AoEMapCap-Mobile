@@ -1,0 +1,54 @@
+// App Android = trang web/ chạy trong WebView (xem MainActivity). Build trên GitHub Actions
+// (.github/workflows/release.yml); số phiên bản lấy từ tag v<N>: -PversionCode=<N>.
+plugins {
+    id 'com.android.application'
+}
+
+def keystore = System.getenv('ANDROID_KEYSTORE')    // đường dẫn file .jks giải từ secret; không có thì ký bằng khoá debug
+
+android {
+    namespace 'io.github.trandinhnamuet.aoemapcap'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'io.github.trandinhnamuet.aoemapcap'
+        minSdk 26
+        targetSdk 35
+        versionCode((project.findProperty('versionCode') ?: '1') as int)
+        versionName "${project.findProperty('versionCode') ?: '1'}"
+    }
+
+    signingConfigs {
+        if (keystore) {
+            release {
+                storeFile file(keystore)
+                storePassword System.getenv('ANDROID_KEYSTORE_PASSWORD')
+                keyAlias 'aoemapcap'
+                keyPassword System.getenv('ANDROID_KEYSTORE_PASSWORD')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig keystore ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+
+    // trang web nằm ở web/ (gốc repo), dùng chung với bản chạy trên trình duyệt (trạm chuyển tiếp)
+    sourceSets {
+        main { assets.srcDirs = ['../../web'] }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation 'androidx.webkit:webkit:1.12.1'
+    // máy quét QR của Google Play Services: giao diện quét có sẵn, app không cần quyền camera
+    implementation 'com.google.android.gms:play-services-code-scanner:16.1.0'
+}
