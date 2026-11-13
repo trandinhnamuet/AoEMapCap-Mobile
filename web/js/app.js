@@ -146,6 +146,7 @@ class Relay {
     this.room = room; this.ws = null; this.ready = null; this.n = 0; this.pending = new Map(); this.pcOn = false;
     this.pcWait = [];             // hàm gọi khi máy tính kết nối lại
     this.pcSeen = false;          // máy tính đã online trong phiên này (rớt thì chờ nối lại; tắt hẳn từ đầu thì báo ngay)
+    this.onPc = null;             // hàm(bật?) gọi khi trạm báo máy tính vừa bật / tắt (vỏ app hiện trạng thái ngay)
   }
   _pcBack() { this.pcSeen = true; const w = this.pcWait; this.pcWait = []; for (const f of w) f(); }
   async _waitPc(ms) {
@@ -168,10 +169,11 @@ class Relay {
           clearTimeout(timer);
           this.ws = ws; this.pcOn = !!j.pc;
           if (this.pcOn) this._pcBack();
+          if (this.onPc) this.onPc(this.pcOn);
           ping = setInterval(() => { try { ws.send("ping"); } catch { /* đang đóng */ } }, 25000);
           resolve(ws);
-        } else if (j.pc === "on") { this.pcOn = true; this._pcBack(); }
-        else if (j.pc === "off") { this.pcOn = false; this._failAll(new Error(OFFLINE)); }
+        } else if (j.pc === "on") { this.pcOn = true; this._pcBack(); if (this.onPc) this.onPc(true); }
+        else if (j.pc === "off") { this.pcOn = false; this._failAll(new Error(OFFLINE)); if (this.onPc) this.onPc(false); }
         else if (j.err) this._fail(j.r, new Error(j.err === "pc-offline" ? OFFLINE : j.err));
       };
       ws.onclose = () => {
@@ -200,7 +202,7 @@ class Relay {
   async fetch(path) {
     await this._connect();
     if (!this.pcOn && this.pcSeen) await this._waitPc(PC_BACK_MS);
-    if (!this.pcOn) throw new Error(OFFLINE);
+    if (!this.pcOn) { const e = new Error(OFFLINE); e.offline = true; throw e; }   // trạm báo máy tính đang tắt
     const r = ++this.n;
     return new Promise((resolve, reject) => {
       let ctl = null, got = 0, started = false, lost = 0;
@@ -264,17 +266,26 @@ class Source {
   }
   get linked() { return !!(this.link.base || this.link.lan || this.link.room); }
   async _pick() {
-    if (this.link.lan && IN_APP) {
-      try {
-        const r = await fetchTimeout("/pc/" + this.link.lan + "/api/matches", this.relay ? 3000 : 15000);
-        if (r.ok) return "lan";
-        if (!this.relay) throw new Error("máy tính trả lỗi " + r.status);
-      } catch (e) {
-        if (!this.relay) throw new Error("không kết nối được " + this.link.lan + " (" + e.message + ")");
-      }
+    // Thử mạng nhà và trạm CÙNG LÚC (trước v10: chờ mạng nhà hết 3 s rồi mới tới trạm). Mạng nhà trả lời trong 1,2 s thì
+    // đi thẳng; không thì đi trạm ngay khi trạm nối được (trạm báo luôn máy tính bật hay tắt).
+    let lanErr = null;
+    const lan = (this.link.lan && IN_APP)
+      ? fetchTimeout("/pc/" + this.link.lan + "/api/matches?" + who(), this.relay ? 3000 : 15000)
+        .then(r => { if (!r.ok) lanErr = new Error("máy tính trả lỗi " + r.status); return r.ok; })
+        .catch(e => { lanErr = e; return false; })
+      : Promise.resolve(false);
+    if (!this.relay) {
+      if (await lan) return "lan";
+      throw new Error(this.link.lan ? "không kết nối được " + this.link.lan + (lanErr ? " (" + lanErr.message + ")" : "")
+        : "chưa kết nối máy tính");
     }
-    if (this.relay) return "relay";
-    throw new Error("chưa kết nối máy tính");
+    const rel = this.relay._connect().then(() => true).catch(() => false);
+    if ((await Promise.race([lan, sleep(1200).then(() => null)])) === true) return "lan";
+    if (await rel) {
+      if (this.relay.pcOn) return "relay";
+      return (await lan) ? "lan" : "relay";       // trạm báo máy tính tắt: chỉ còn hi vọng mạng nhà (máy tính mất Internet)
+    }
+    return (await lan) ? "lan" : "relay";
   }
   async fetch(path) {
     if (this.link.base) return fetch(this.link.base + path, { cache: "no-store" });
@@ -304,6 +315,8 @@ class Source {
       try { return await fn(); }
       catch (e) {
         if (e.fatal) throw e;
+        // trạm báo máy tính đang tắt và trong phiên này chưa từng thấy nó bật: báo ngay, không thử lại 2 phút
+        if (e.offline && !(this.relay && this.relay.pcSeen)) throw e;
         since = since || Date.now();
         if (Date.now() - since > RETRY_MS) throw e;
         onStatus && onStatus("Mất kết nối máy tính, đang thử lại… (" + e.message + ")");
@@ -529,9 +542,10 @@ async function connect(link) {
   }
   saveLink(link);
   msg.textContent = "";
-  APP.src = src; APP.online = null; APP.items = [];
+  APP.src = src; APP.online = null; APP.items = []; APP.loading = null;
   showTab("list");
   loadList();
+  watchPc();
   return true;
 }
 
@@ -584,12 +598,17 @@ function bindSetup() {
     if (!link.room) link.room = localStorage.getItem(ROOM_KEY);   // giữ phòng đã ghép (đổi địa chỉ mạng nhà)
     connect(link);
   };
-  $("#link-retry").onclick = async () => { APP.online = null; renderLink(); await loadList(); renderLink(); };
+  $("#link-retry").onclick = async () => {
+    APP.online = null; if (APP.src) APP.src.via = null;
+    setOnline(null); await loadList(); renderLink();
+  };
+  $("#pc-state").onclick = () => showTab("setup");
   $("#link-remove").onclick = () => dialog("Bỏ liên kết với máy tính này?\nCác trận đã lưu trên điện thoại vẫn được giữ. " +
     "Muốn xem trận mới phải quét lại mã QR.", { label: "Bỏ liên kết", fn: () => {
       saveLink({});
       if (APP.autoLive) APP.autoLive.cancel();
-      APP.src = new Source(null, APP.store); APP.online = false; APP.via = null;
+      clearInterval(APP.watchTimer);
+      APP.src = new Source(null, APP.store); APP.online = false; APP.via = null; APP.loading = null;
       $("#pc-addr").value = "";
       renderLink(); loadList();
     } });
@@ -690,7 +709,9 @@ function setOnline(on) {
   const linked = APP.src && APP.src.linked;
   pill.hidden = !linked;
   pill.className = "pill " + (on ? "on" : on === false ? "off" : "");
-  pill.textContent = on ? "● Máy tính" : on === false ? "○ Ngoại tuyến" : "… Máy tính";
+  pill.textContent = on ? "● Máy tính bật" : on === false ? "○ Máy tính tắt" : "… Đang kiểm tra";
+  try { sessionStorage.setItem("aoe.via", on && APP.via ? APP.via : ""); } catch { /* không lưu được cũng không sao */ }
+  if (!$("#setup").hidden) renderLink();
   const note = $("#list-note");
   if (on === false && linked) {
     note.textContent = "Không kết nối được máy tính: chỉ hiện trận đã lưu trên điện thoại là mở được. Lịch sử đấu bên " +
@@ -700,7 +721,41 @@ function setOnline(on) {
 }
 
 // Lấy danh sách: hiện ngay bản nhớ lần trước (nếu có), rồi hỏi máy tính; không hỏi được thì giữ bản nhớ + trận đã lưu.
-async function loadList() {
+function loadList() {
+  // một lượt kiểm tra tại một thời điểm; nơi khác (chạm trận chưa lưu khi đang kiểm tra) chờ đúng lượt này
+  if (!APP.loading) APP.loading = loadListNow().finally(() => { APP.loading = null; });
+  return APP.loading;
+}
+
+// Theo dõi máy tính bật / tắt suốt lúc app mở (người dùng 13/11: trạng thái phải có sẵn từ khi mở app, không đợi tới lúc
+// bấm một trận). Có trạm: trạm báo ngay khi máy tính bật / tắt, và cứ 15 s nối lại trạm nếu rớt. Chỉ có mạng nhà: hỏi
+// lại mỗi 20 s.
+function watchPc() {
+  clearInterval(APP.watchTimer);
+  const src = APP.src;
+  if (!src || !src.linked || src.link.base) return;
+  if (src.relay) {
+    src.relay.onPc = on => {
+      if (src !== APP.src) return;
+      if (on && APP.online !== true) loadList();                     // vừa bật: lấy danh sách mới + tự lưu
+      else if (!on && APP.online === true) {
+        src.via = null;
+        if (APP.via === "lan") loadList();                           // đang đi mạng nhà: kiểm tra lại đường đó
+        else { setOnline(false); renderList(); }
+      }
+    };
+  }
+  APP.watchTimer = setInterval(() => {
+    if (src !== APP.src || document.hidden || $("#shell").hidden) return;
+    if (src.relay && !src.relay.ws) src.relay._connect().catch(() => {});
+    if ((APP.online !== true || !src.relay) && !APP.autoRun) {       // đang tắt: thử lại; chỉ mạng nhà: hỏi định kỳ
+      if (APP.online !== true) src.via = null;
+      loadList();
+    }
+  }, src.relay ? 15000 : 20000);
+}
+
+async function loadListNow() {
   const box = $("#matches");
   const st = APP.store, src = APP.src;
   const saved = await loadSaved();
@@ -713,9 +768,9 @@ async function loadList() {
     renderList();
     return;
   }
-  setOnline(null);
+  if (APP.online === null) setOnline(null);       // lần đầu: "Đang kiểm tra"; các lần hỏi lại giữ trạng thái đang hiện
   let items = null, err = null;
-  try { items = await src.list(); } catch (e) { err = e; }
+  try { items = await src.list(); } catch (e) { err = e; src.via = null; }
   if (src !== APP.src) return;                 // đã đổi / bỏ liên kết trong lúc chờ
   if (items) {
     APP.via = src.link.base ? "direct" : await Promise.resolve(src.via).catch(() => null);
@@ -832,6 +887,12 @@ function renderTable(box, items) {
 
 // chạm một trận: đã lưu -> mở ngay; chưa lưu -> lấy file ghi từ máy tính nếu máy tính đang kết nối được, không thì báo
 function openFromList(it) {
+  if (!APP.saved.has(it.file) && APP.online === null && APP.loading) {
+    // đang kiểm tra máy tính (vừa mở app): chờ đúng lượt kiểm tra đó rồi quyết định, không bắt người dùng bấm lại
+    dialog("Đang kiểm tra kết nối với máy tính…");
+    APP.loading.then(() => { $("#dlg").hidden = true; if (APP.online !== null) openFromList(it); });
+    return;
+  }
   if (!APP.saved.has(it.file) && APP.online !== true) {
     const linked = APP.src && APP.src.linked;
     dialog(linked ? "Trận này chưa lưu file ghi về điện thoại.\nCần bật máy tính (mở AoE-MapCap, vào mục Điện thoại, máy " +
@@ -1026,18 +1087,23 @@ async function main() {
       const it = JSON.parse(sessionStorage.getItem("aoe.open")) || {};
       if (it.file === q.get("m")) info = it.info || null;
     } catch { /* không có */ }
+    try {
+      const via = sessionStorage.getItem("aoe.via");
+      if ((via === "lan" && link.lan) || (via === "relay" && src.relay)) src.via = Promise.resolve(via);
+    } catch { /* không có */ }
     return openMatch(src, q.get("m"), info, q.get("selftest"));
   }
   if (q.get("pair")) {                   // mở từ trình duyệt: aoemapcap://pair?r=<phòng>&l=<địa chỉ> (v14: ?a=<địa chỉ>)
     const p = parsePair(q.get("pair"));
     history.replaceState(null, "", location.pathname);
     showTab("setup");
-    if (p) { if (p.lan) $("#pc-addr").value = p.lan; if (!(await connect(p))) loadList(); }
-    else loadList();
+    if (p) { if (p.lan) $("#pc-addr").value = p.lan; if (!(await connect(p))) { loadList(); watchPc(); } }
+    else { loadList(); watchPc(); }
   } else {
     const saved = store ? await store.saved() : [];
     showTab(!src.linked && !saved.length ? "setup" : "list");      // mở app luôn về danh sách trận
     loadList();
+    watchPc();
     if (IN_APP) checkUpdate(); else if (src.linked) appBanner(link);
   }
   // Back từ trang trận có thể khôi phục nguyên trang cũ (bfcache): vẽ lại danh sách cho nhãn "đã lưu" mới
