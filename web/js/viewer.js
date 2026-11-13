@@ -8,6 +8,7 @@ import { AGE_VI, ECO_COLS, HudData, Icons, P_AGE, TC_DAT, esc, fmtMs, milCols, s
 const SPEEDS = [0.25, 0.5, 1, 2, 4, 8, 16];
 const JUMP_MS = 15000;             // lùi / tới 15 giây giờ game
 const HUD_MS = 200;                // làm mới bảng HUD tối đa 5 lần mỗi giây khi đang phát
+const BAR_MS = 5000;               // thanh thời gian tự ẩn sau bấy nhiêu ms không kéo máy quay / không dùng thanh
 const FLY_MS = 900;                // máy quay tự động lướt sang mục tiêu mới trong bấy nhiêu ms
 const DECODE_BUDGET_MS = 8;        // giải mã sprite mới tối đa mỗi khung hình; còn lại để khung sau
 
@@ -49,7 +50,7 @@ export class Viewer {
     this.icons = new Icons(this.m, this.pack.palette);
     this.hudStatics = new Map();
     this.hs = null;
-    this.show = { score: false, techs: false, mini: true, hide: false, help: false };
+    this.show = { score: false, techs: false, mini: true, hide: false, help: false, hp: false };
     this.scoreMode = 0;
     const recTeam = M.teams[this.lastTeam];
     this.selected = recTeam && recTeam.players.length ? recTeam.players[0] : (M.players[0] || {}).index ?? null;
@@ -421,8 +422,12 @@ export class Viewer {
                 build: q(".v-build") };
     const u = this.ui;
     u.tools = add("v-tools", "div", [["score", "Bảng"], ["techs", "Công nghệ"], ["mini", "Bản đồ"],
-      ["auto", "Tự động"], ["follow", "Khoá"], ["hide", "Ẩn"], ["help", "?"]]
+      ["auto", "Tự động"], ["follow", "Khoá"], ["hp", "Máu"]]
       .map(([a, t]) => `<button data-a="${a}">${t}</button>`).join(""));
+    // nút Ẩn và ? nằm ở thanh thời gian (người dùng 13/11)
+    for (const b of u.bottom.querySelectorAll("button[data-a]")) b.onclick = () => this.action(b.dataset.a);
+    u.hpAll = add("v-hpall", "canvas");               // thanh máu trên đầu mọi unit (nút Máu)
+    u.hpAll.hidden = true;
     u.panels = add("v-panels");
     u.techs = document.createElement("div"); u.techs.className = "v-panel v-techs"; u.panels.appendChild(u.techs);
     u.score = document.createElement("div"); u.score.className = "v-panel v-score"; u.panels.appendChild(u.score);
@@ -430,7 +435,10 @@ export class Viewer {
     u.mini = add("v-mini", "canvas");
     u.help = add("v-help");
     u.toast = add("v-toast");
-    u.mark = add("v-mark");
+    // unit đang chọn: hình thoi màu người chơi dưới chân (như trình xem trên máy tính), không phải vòng tròn vàng
+    u.mark = add("v-mark", "div", `<svg viewBox="-1 -1 2 2" preserveAspectRatio="none"><polygon points="-0.96,0 0,-0.92 0.96,0 0,0.92"/></svg>`);
+    u.hpbar = add("v-hpbar", "div", "<i></i>");       // thanh máu trên đầu unit đang chọn (xanh = còn, đỏ = đã mất)
+    u.hpbar.hidden = true;
     u.unhide = add("v-unhide", "button", "Hiện HUD");
     u.seek.max = 1000;
     u.play.onclick = () => this.togglePlay();
@@ -480,6 +488,11 @@ export class Viewer {
     };
     u.mini.addEventListener("pointerdown", e => this._miniPointer(e));
     u.mini.addEventListener("pointermove", e => { if (e.buttons) this._miniPointer(e); });
+    // thanh thời gian tự ẩn (mờ dần) sau BAR_MS không tự kéo máy quay / không dùng thanh; đang dùng thanh thì tính lại giờ
+    this._barOff = false; this._barT = performance.now();
+    u.bottom.classList.remove("gone");
+    for (const ev of ["pointerdown", "pointermove", "input", "click"])
+      u.bottom.addEventListener(ev, () => { this._barT = performance.now(); }, true);
     this._buildMinimap();
     if (!this.hud.ok) this.toast("Trận này chưa có bảng thông số: cập nhật AoE-MapCap trên máy tính (v17 trở lên), " +
       "rồi mở lại trận khi điện thoại kết nối được máy tính.", 6000);
@@ -515,6 +528,8 @@ export class Viewer {
       ["Bảng → chạm đội / người chơi", "xem tầm nhìn của đội đó (chạm người chơi: tới nhà chính của họ)"],
       ["Toàn map / Đội", "tầm nhìn của từng đội, hoặc toàn bản đồ: thấy hết unit, chỗ không người chơi nào nhìn thấy thì tối"],
       ["−15s / +15s", "lùi / tới 15 giây; − / + đổi tốc độ 0,25x … 16x, chạm số tốc độ: về 1x"],
+      ["Máu", "hiện thanh máu trên đầu mọi unit và công trình (unit đang chọn thì luôn có thanh máu)"],
+      ["Chạm chỗ trống", "ẩn / hiện thanh thời gian; thanh tự ẩn sau 5 giây, tự kéo máy quay thì hiện lại"],
       ["Ẩn", "ẩn toàn bộ HUD để xem trận"],
       ["Bàn phím", "P phát, −/=/0 tốc độ, Backspace/J lùi/tới, F1/F2/F3 tầm nhìn, V/F, O/X bảng, C công nghệ, " +
         "M minimap, H ẩn, L khoá, Home toàn cảnh, Space về nhà chính, 1–5 / Q–T chọn người chơi"],
@@ -525,7 +540,8 @@ export class Viewer {
 
   action(a) {
     const s = this.show;
-    if (a === "score" || a === "techs" || a === "mini" || a === "help" || a === "hide") s[a] = !s[a];
+    if (a === "score" || a === "techs" || a === "mini" || a === "help" || a === "hide" || a === "hp") s[a] = !s[a];
+    if (a === "hp") { this._hudT = 0; this._hudDirty = true; this.toast(s.hp ? "Thanh máu mọi unit: BẬT" : "Thanh máu mọi unit: tắt", 1500); }
     else if (a === "auto") this.setAutoCam(!this.autoCam);
     else if (a === "follow") {
       this._takeCamera();
@@ -568,6 +584,7 @@ export class Viewer {
     // minimap đang ẩn: hàng nút tầm nhìn lên đúng chỗ của minimap
     this.root.style.setProperty("--mini-h", u.mini.hidden ? "-6px" : (this._miniH || 88) + "px");
     u.unhide.hidden = !s.hide;
+    u.hpAll.hidden = s.hide || !s.hp;
     u.help.hidden = !s.help;
     u.score.hidden = !s.score;
     u.techs.hidden = !s.techs;
@@ -576,6 +593,8 @@ export class Viewer {
 
   _tickUi() {
     const u = this.ui;
+    if (!this.playing || this.scrubbing) this._barT = performance.now();     // đang dừng / đang tua: không tự ẩn
+    else if (!this._barOff && performance.now() - this._barT > BAR_MS) this._bar(false);
     const fi = Math.max(0, this.state.frame);
     const txt = fmtClock(this.m.t[fi]);
     if (u.time.textContent !== txt) u.time.textContent = txt;
@@ -587,12 +606,13 @@ export class Viewer {
       if (u.build.textContent !== bt) { u.build.textContent = bt; u.build.hidden = !bt; }
     }
     const now = performance.now();
-    const want = this.show.score || this.show.techs || this.sel || this.autoCam;
+    const want = this.show.score || this.show.techs || this.sel || this.autoCam || this.show.hp;
     if (want && !this._hudBusy && (fi !== this._hudFrame || this._hudDirty) && now - (this._hudT || 0) >= HUD_MS) {
       this._hudBusy = true; this._hudT = now; this._hudDirty = false;
       this._refreshHud(fi).catch(e => console.warn(e)).finally(() => { this._hudBusy = false; });
     }
     this._placeMark();
+    if (!u.hpAll.hidden) this._drawHpAll();
     if (!u.mini.hidden && now - (this._miniT || 0) > 250) { this._miniT = now; this._drawMinimap(); }
   }
 
@@ -617,6 +637,12 @@ export class Viewer {
   }
 
   _takeCamera() { this.fly = null; if (this.autoCam) this.setAutoCam(false); }
+
+  // thanh thời gian: hiện / ẩn (mờ dần bằng CSS .gone). Hiện lại khi tự di chuyển máy quay hoặc chạm chỗ trống.
+  _bar(on) {
+    this._barOff = !on; this._barT = performance.now();
+    if (this.ui && this.ui.bottom) this.ui.bottom.classList.toggle("gone", !on);
+  }
 
   _dirLock(uid, owner, rank, label) {
     const D = this._dir;
@@ -754,9 +780,10 @@ export class Viewer {
 
   _renderInfo() {
     const u = this.ui;
-    if (!this.sel) { u.info.innerHTML = ""; return; }
+    if (!this.sel) { u.info.innerHTML = ""; this._selHp = null; return; }
     if (!this.hud.ok || !this.hs) return;
     const I = unitInfo(this, this.sel, this.hs);
+    this._selHp = I.gone || !I.hp ? null : { uid: this.sel.uid, hp: I.hp };
     if (I.gone) { u.info.innerHTML = `<div class="ph"><b>(unit không còn)</b><button data-close="info" class="x">✕</button></div>`; return; }
     const ic = I.iconId >= 0 ? this.icons.unit(I.iconId, I.utype, I.colorId, I.age, I.name) : "";
     let h = `<div class="ph">${ic}<div class="nm"><b>${esc(I.name)}</b><span style="color:${I.color}">${esc(I.owner)}</span></div>` +
@@ -849,11 +876,93 @@ export class Viewer {
     if (Math.abs(ax - this.cam.x) + Math.abs(ay - this.cam.y) > 0.5 || F) { this.cam.x = ax; this.cam.y = ay; this._clamp(); }
   }
 
+  // đỉnh hình (so với điểm neo, điểm ảnh thế giới, âm = lên trên) và bề rộng hình của một key đang vẽ
+  _keyBox(key) {
+    const m = this.m;
+    let top = 0, w = 0;
+    if (key >= 0) {
+      for (let j = 0, s = m.kStart[key], c = m.kCount[key]; j < c; j++) {
+        const e = this.R.atlas.map.get(m.pSlp[s + j] * 65536 + m.pFrame[s + j]);
+        if (!e) continue;
+        if (e.w > w) w = e.w;
+        if (m.pDy[s + j] < top) top = m.pDy[s + j];
+      }
+    }
+    return [top, w];
+  }
+
+  // nút Máu: thanh máu trên đầu mọi unit / công trình có chủ đang hiện (xanh = còn, đỏ = đã mất, viền đen) như máy tính
+  _drawHpAll() {
+    const cv = this.ui.hpAll, main = this.canvas, hs = this.hs, H = this.hud.H;
+    if (cv.width !== main.width || cv.height !== main.height) { cv.width = main.width; cv.height = main.height; }
+    const g = cv.getContext("2d");
+    g.clearRect(0, 0, cv.width, cv.height);
+    if (!hs || !H) return;
+    const st = this.state, z = this.cam.zoom, dpr = this.dpr, fi = Math.max(0, st.frame);
+    if (this._hpMaxHs !== hs) { this._hpMaxHs = hs; this._hpMax = new Map(); }
+    const maxOf = def => {
+      let v = this._hpMax.get(def);
+      if (v === undefined) {
+        const s = this.hud.stats(def, fi), D = H.defs[def];
+        v = (s && s.hp) || (D ? D[3] : 0) || 0;
+        this._hpMax.set(def, v);
+      }
+      return v;
+    };
+    const h = Math.max(2, Math.round(2.5 * dpr)), b = Math.max(1, Math.round(dpr / 2));
+    const bar = (row, key, bld, x, y, zz) => {
+      if (!row) return;
+      const hp = row[2], mx = maxOf(row[1]);
+      if (!(mx > 0) || !(hp > 0)) return;
+      const [X, Y] = this._screenOf(x, y, zz);
+      if (X < -60 * dpr || Y < -20 || X > cv.width + 60 * dpr || Y > cv.height + 200 * z) return;
+      const [top, w] = this._keyBox(key);
+      const hx = bld ? Math.max(34, Math.min(80, (w || 120) * 0.55)) : 15.4;
+      const bw = Math.round(Math.max(22 * dpr, Math.min(112 * dpr, hx / 1.6 * 2.6 * z)));
+      const x0 = Math.round(X - bw / 2), y0 = Math.round(Y + (top || -40) * z - 9 * dpr);
+      const f = Math.max(0, Math.min(1, hp / mx)), gw = Math.round(bw * f);
+      g.fillStyle = "#000"; g.fillRect(x0 - b, y0 - b, bw + 2 * b, h + 2 * b);
+      g.fillStyle = "#dc2d23"; g.fillRect(x0 + gw, y0, bw - gw, h);
+      g.fillStyle = "#32d246"; g.fillRect(x0, y0, gw, h);
+    };
+    for (const i of this.drawn) {
+      if (st.owner[i] > 0) bar(hs.units.get(st.uid[i]), st.key[i], (st.flags[i] & F_BLD) !== 0, st.x[i], st.y[i], st.z[i]);
+    }
+    for (const uid of this.drawnS) {
+      const r = st.statics.get(uid);
+      if (r && r[4] > 0 && (r[5] & F_BLD)) bar(this.hudStatics.get(uid), r[0], true, r[1], r[2], r[3]);
+    }
+  }
+
   _placeMark() {
-    const mk = this.ui.mark;
+    const mk = this.ui.mark, hb = this.ui.hpbar;
     const p = this.sel && !this.show.hide ? this._unitPos(this.sel) : null;
-    if (!p) { if (!mk.hidden) mk.hidden = true; return; }
+    if (!p) { if (!mk.hidden) mk.hidden = true; if (!hb.hidden) hb.hidden = true; return; }
     const [X, Y] = this._screenOf(...p);
+    // cỡ hình thoi: unit thường = bán kính 0,3 ô như máy tính (32 * r * 1,6); công trình = theo bề rộng hình đang vẽ
+    const st = this.state, m = this.m, sel = this.sel;
+    let key = -1, bld = false;
+    if (sel.kind === "u") { const i = st.pos.get(sel.uid); if (i !== undefined) { key = st.key[i]; bld = (st.flags[i] & F_BLD) !== 0; } }
+    else { const r = st.statics.get(sel.uid); if (r) { key = r[0]; bld = (r[5] & F_BLD) !== 0; } }
+    const [top, w] = this._keyBox(key);
+    const hx = bld ? Math.max(34, Math.min(80, (w || 120) * 0.55)) : 15.4;
+    // thanh máu: trên đỉnh hình 7 px, rộng theo cỡ unit 28-112 px, cao 3 px (như trình xem trên máy tính)
+    const hp = !this.show.hp && this._selHp && this._selHp.uid === sel.uid ? this._selHp.hp : null;
+    if (hp && hp[1] > 0) {
+      const bw = Math.round(Math.max(28, Math.min(112, hx / 1.6 * 2.6 * this.cam.zoom / this.dpr)));
+      const f = Math.max(0, Math.min(1, hp[0] / hp[1]));
+      const ht = bw + "|" + Math.round(f * bw);
+      if (hb._tag !== ht) { hb._tag = ht; hb.style.width = bw + "px"; hb.style.left = -bw / 2 - 1 + "px"; hb.firstChild.style.width = f * 100 + "%"; }
+      hb.hidden = false;
+      hb.style.transform = `translate(${X / this.dpr}px, ${(Y + (top || -40) * this.cam.zoom) / this.dpr - 12}px)`;
+    } else if (!hb.hidden) hb.hidden = true;
+    const W = Math.max(14, Math.round(2 * hx * this.cam.zoom / this.dpr)), tag = W + "|" + (sel.owner || 0);
+    if (mk._tag !== tag) {
+      mk._tag = tag;
+      mk.style.width = W + "px"; mk.style.height = W / 2 + "px"; mk.style.left = -W / 2 + "px"; mk.style.top = -W / 4 + "px";
+      const pl = this.m.meta.players.find(q => q.index === sel.owner);
+      mk.style.color = pl ? pl.color : "#e6e6e6";
+    }
     mk.hidden = false;
     mk.style.transform = `translate(${X / this.dpr}px, ${Y / this.dpr}px)`;
   }
@@ -940,6 +1049,7 @@ export class Viewer {
     const c = this.ui.mini, M = this.m.meta;
     const r = c.getBoundingClientRect();
     this._takeCamera();
+    this._bar(true);
     this.follow = false;
     this.cam.x = (e.clientX - r.left) / r.width * M.full_w;
     this.cam.y = (e.clientY - r.top) / r.height * M.full_h;
@@ -965,6 +1075,7 @@ export class Viewer {
       if (pts.size === 1 && now - lastTap < 300) {               // chạm đúp: phóng to 2 lần quanh điểm chạm
         const r = c.getBoundingClientRect();
         this.zoomAt(2, (e.clientX - r.left) * this.dpr, (e.clientY - r.top) * this.dpr);
+        this._bar(true);
         down = null;
       }
       lastTap = now;
@@ -981,6 +1092,7 @@ export class Viewer {
       const mid1 = cur.reduce((s, q) => [s[0] + q[0] / cur.length, s[1] + q[1] / cur.length], [0, 0]);
       const z = this.cam.zoom / this.dpr;
       this._takeCamera();
+      this._bar(true);                                            // tự kéo máy quay: hiện lại thanh thời gian
       this.follow = false;                                        // tự kéo máy quay: bỏ khoá
       this.cam.x -= (mid1[0] - mid0[0]) / z;
       this.cam.y -= (mid1[1] - mid0[1]) / z;
@@ -999,7 +1111,11 @@ export class Viewer {
         const hit = this._pick((e.clientX - r.left) * this.dpr, (e.clientY - r.top) * this.dpr);
         // chạm chỗ trống: bỏ chọn (chờ xem có phải chạm đúp không)
         if (hit) { this._takeCamera(); this.selectUnit(hit); }
-        else setTimeout(() => { if (performance.now() - lastTap >= 290 && this.sel && !this.autoCam) this.selectUnit(null); }, 300);
+        else setTimeout(() => {              // chạm chỗ trống (không phải chạm đúp): bỏ chọn + ẩn / hiện thanh thời gian
+          if (performance.now() - lastTap < 290) return;
+          if (this.sel && !this.autoCam) this.selectUnit(null);
+          this._bar(this._barOff);
+        }, 300);
       }
       pts.delete(e.pointerId);
       if (pts.size < 2) pinch = null;
@@ -1012,6 +1128,7 @@ export class Viewer {
       e.preventDefault();
       const r = c.getBoundingClientRect();
       this.zoomAt(Math.pow(1.0015, -e.deltaY), (e.clientX - r.left) * this.dpr, (e.clientY - r.top) * this.dpr);
+      this._bar(true);
     }, { passive: false });
     const M = this.m.meta;
     const selKeys = {};

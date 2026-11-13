@@ -394,3 +394,62 @@ select { padding: 9px 10px; font-size: 14px; max-width: 58%; }
 .v-info .hp { margin: 1px 0; }
 .v-info .stats { margin-top: 1px; gap: 0 4px; }
 
+/* ---- v12 (người dùng 13/11): minimap sát mép trên màn hình (trước cách 52 px, dưới hàng nút quay lại); thanh thời gian
+   tự ẩn / hiện bằng mờ dần (viewer.js _bar) ----------------------------------------------------------------------- */
+.v-mini, #viewer canvas.v-mini { top: env(safe-area-inset-top); }
+.v-persp { top: calc(env(safe-area-inset-top) + var(--mini-h, 88px) + 5px); }
+.v-toast { left: 74px; right: calc(var(--mini-w, 168px) + 16px); transform: none; max-width: none; width: auto; text-align: center; }
+.v-bottom { transition: opacity .45s ease; }
+.v-bottom.gone { opacity: 0; }
+.v-bottom.gone, .v-bottom.gone > * { pointer-events: none; }
+/* unit đang chọn: hình thoi màu người chơi (viewer.js _placeMark), thay vòng tròn vàng */
+.v-mark { border: 0; border-radius: 0; left: 0; top: 0; }
+.v-mark svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.v-mark polygon { fill: none; stroke: currentColor; stroke-width: 2px; vector-effect: non-scaling-stroke;
+  filter: drop-shadow(0 0 1px rgba(0,0,0,.9)); }
+/* bảng công nghệ nhỏ hẳn lại, bảng chỉ số người chơi nhỏ hơn một chút (người dùng 13/11) */
+.v-techs { flex: 0 1 168px; padding: 4px 5px; font-size: 9.5px; max-height: 30vh; }
+.v-techs .ph { margin-bottom: 2px; }
+.v-techs .ph b { font-size: 10.5px; }
+.v-techs .ph .x { width: 18px; height: 16px; font-size: 9px; }
+.v-techs .chips { gap: 3px; margin-bottom: 3px; }
+.v-techs .chips button { padding: 1px 5px; font-size: 9px; border-radius: 8px; }
+.v-techs .chips i { width: 6px; height: 6px; margin-right: 3px; }
+.v-techs .sub { font-size: 9px; margin: 3px 0 2px; }
+.v-techs .muted { display: none; }
+.v-techs .sub + .muted { display: block; font-size: 9px; margin: 0; }
+.v-techs .grid { grid-template-columns: repeat(auto-fill, minmax(24px, 1fr)); gap: 2px; }
+.v-techs .tc { font-size: 8px; line-height: 1.1; }
+.v-techs .ic, .v-panel.v-techs .ic { width: 20px; height: 20px; border-radius: 3px; }
+.v-techs .prog { gap: 4px; margin: 2px 0; }
+.v-techs .prog span { font-size: 9px; }
+.v-techs .pbar { height: 4px; margin-top: 2px; }
+.v-score { padding: 4px 5px; }
+.v-score .ph { margin-bottom: 2px; }
+.v-score .ph b { font-size: 11px; }
+.v-score .tabs button { padding: 1px 7px; font-size: 10px; }
+.v-score table { font-size: 10.5px; }
+.v-score th { font-size: 9.5px; padding: 1px 3px; }
+.v-score td { padding: 1px 3px; }
+.v-score td.nm { max-width: 104px; }
+.v-score .ri { height: 11px; }
+.v-score tr.team td { padding-top: 2px; font-size: 9.5px; }
+@media (max-width: 560px) {
+  .v-score td, .v-score th { padding: 1px 2px; font-size: 9.5px; }
+  .v-score th { font-size: 8.5px; }
+  .v-score td.nm { max-width: 70px; }
+}
+/* thanh máu trên đầu unit đang chọn */
+.v-hpbar { position: absolute; left: 0; top: 0; height: 3px; background: #dc2d23; border: 1px solid #000; box-sizing: content-box;
+  pointer-events: none; z-index: 1; }
+.v-hpbar i { display: block; height: 100%; background: #32d246; }
+.v-hpbar[hidden] { display: none; }
+/* thông báo có bản mới: nút Cập nhật ngay */
+#update-note .upd-go { margin-left: 6px; padding: 5px 12px; border-radius: 14px; border: 1px solid var(--gold); color: var(--gold);
+  background: rgba(0,0,0,.25); font-weight: 600; }
+/* thanh máu mọi unit (nút Máu): khung vẽ phủ lên khung chính, không nhận chạm */
+#viewer canvas.v-hpall { pointer-events: none; z-index: 1; }
+#viewer canvas.v-hpall[hidden] { display: none; }
+.v-bottom .v-aux { min-width: 30px; padding: 0 8px; margin-left: 2px; }
+.msg .upd-go, #update-note .upd-go { margin: 0 6px; padding: 5px 12px; border-radius: 14px; border: 1px solid var(--gold);
+  color: var(--gold); background: rgba(0,0,0,.25); font-weight: 600; }

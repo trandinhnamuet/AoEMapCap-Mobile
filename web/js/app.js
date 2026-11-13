@@ -637,11 +637,39 @@ async function checkUpdate(force) {
   const last = await latestApp();
   if (!last || last.code <= +app.versionCode()) return last ? false : null;
   const n = $("#update-note");
-  n.innerHTML = `Có bản app mới (${esc(last.tag)}). <a href="${esc(last.url)}">Tải về</a>`;
+  // app từ v12 tự tải + cài (một chạm); app cũ hơn / lỗi: liên kết tải file như trước
+  n.innerHTML = app.update
+    ? `<span class="upd-t">Có bản app mới (${esc(last.tag)}).</span> <button type="button" class="upd-go">Cập nhật ngay</button>`
+    : `Có bản app mới (${esc(last.tag)}). <a href="${esc(last.url)}">Tải về</a>`;
   n.hidden = false;
+  const go = n.querySelector(".upd-go");
+  if (go) go.onclick = () => startUpdate(last);
   const tab = $("#tabs [data-tab=settings]");
   if (tab && !tab.querySelector(".dot")) tab.insertAdjacentHTML("beforeend", `<i class="dot"></i>`);
   return last;
+}
+
+// cập nhật một chạm: app tải APK bản mới rồi giao cho Android cài đè; cài xong Android đóng app, mở lại là bản mới
+function startUpdate(last, where) {
+  const app = window.AoEApp, n = where || $("#update-note");
+  const manual = why => {
+    n.innerHTML = `${esc(why)} <a href="${esc(last.url)}">Tải file cài</a> rồi mở file để cài đè.`;
+  };
+  window.onUpdateState = (state, a, b, msg) => {
+    if (state === "download") n.textContent = `Đang tải bản ${last.tag}… ${b > 0 ? Math.round(a / b * 100) + "%" : (a / 1e6).toFixed(1).replace(".", ",") + " MB"}`;
+    else if (state === "install") n.textContent = `Đang cài bản ${last.tag}… App sẽ tự đóng khi cài xong, hãy mở lại app.`;
+    else if (state === "confirm") n.textContent = "Hãy bấm Cập nhật trong hộp thoại của Android. Lần đầu Android có thể hỏi cho phép app cài bản mới: bật lên rồi quay lại.";
+    else if (state === "done") n.textContent = `Đã cài bản ${last.tag}. Hãy mở lại app.`;
+    else if (state === "cancel") {
+      n.innerHTML = `<span class="upd-t">Chưa cập nhật (đã huỷ).</span> <button type="button" class="upd-go">Cập nhật ngay</button>`;
+      n.querySelector(".upd-go").onclick = () => startUpdate(last, where);
+    } else manual("Không tự cập nhật được" + (msg ? " (" + msg + ")." : "."));
+  };
+  n.hidden = false;
+  n.textContent = `Đang tải bản ${last.tag}…`;
+  let ok = false;
+  try { ok = app.update(last.url); } catch { ok = false; }
+  if (!ok) manual("Không tự cập nhật được.");
 }
 
 // ---- trang Cài đặt -------------------------------------------------------------------------------------
@@ -692,7 +720,10 @@ function bindSettings() {
     const r = await checkUpdate(true);
     m.innerHTML = r === null ? "Không hỏi được trang phát hành (kiểm tra Internet)."
       : r === false ? "Bạn đang dùng bản mới nhất."
+      : app.update ? `Có bản mới ${esc(r.tag)}. <button type="button" class="upd-go second">Cập nhật ngay</button> Trận đã lưu được giữ nguyên.`
       : `Có bản mới ${esc(r.tag)}: <a href="${esc(r.url)}">tải về</a> rồi cài đè, trận đã lưu được giữ nguyên.`;
+    const go = m.querySelector(".upd-go");
+    if (go) go.onclick = () => startUpdate(r, m);
   };
 }
 

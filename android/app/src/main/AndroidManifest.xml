@@ -2,6 +2,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- cập nhật một chạm: app tự tải APK bản mới từ trang phát hành của mình rồi cài đè (Android vẫn kiểm chữ ký) -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
 
     <!-- usesCleartextTraffic: máy chủ trên máy tính trong mạng nhà chỉ có http -->
     <application
@@ -28,6 +31,7 @@
                 <data android:scheme="aoemapcap" android:host="pair" />
             </intent-filter>
         </activity>
+        <receiver android:name=".MainActivity$UpdateReceiver" android:exported="false" />
         <!-- tải sẵn mô-đun máy quét QR khi cài app (không phải chờ lúc bấm Quét lần đầu) -->
         <meta-data
             android:name="com.google.mlkit.vision.DEPENDENCIES"

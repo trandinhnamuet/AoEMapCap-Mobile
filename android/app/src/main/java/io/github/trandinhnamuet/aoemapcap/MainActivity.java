@@ -1,7 +1,11 @@
 package io.github.trandinhnamuet.aoemapcap;
 
 import android.app.Activity;
+import android.app.PendingIntent;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageInstaller;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
@@ -25,8 +29,13 @@ import com.google.mlkit.vision.codescanner.GmsBarcodeScanning;
 import org.json.JSONObject;
 
 import java.io.ByteArrayInputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.OutputStream;
+import java.lang.ref.WeakReference;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
@@ -43,12 +52,20 @@ public class MainActivity extends Activity {
     private static final String HOST = "appassets.androidplatform.net";
     private static final String START = "https://" + HOST + "/app/index.html";
 
+    /** Bản mới chỉ được tải từ trang phát hành của chính app (file APK còn phải cùng tên gói, cùng chữ ký, số bản lớn hơn). */
+    private static final String UPDATE_FROM = "https://github.com/trandinhnamuet/AoEMapCap-Mobile/releases/download/";
+    private static final String UPDATE_FILE = "update.apk";
+    private static WeakReference<MainActivity> current = new WeakReference<>(null);
+    private volatile boolean updating;
+
     private WebView web;
     private WebViewAssetLoader assets;
 
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
+        current = new WeakReference<>(this);
+        if (!updating) new File(getCacheDir(), UPDATE_FILE).delete();      // file cài của lần cập nhật trước
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         WebView.setWebContentsDebuggingEnabled((getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0);
 
@@ -127,12 +144,117 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public int versionCode() {
-            try {
-                PackageInfo pi = getPackageManager().getPackageInfo(getPackageName(), 0);
-                return Build.VERSION.SDK_INT >= 28 ? (int) pi.getLongVersionCode() : pi.versionCode;
-            } catch (PackageManager.NameNotFoundException e) {
-                return 0;
+            return MainActivity.this.versionCode();
+        }
+
+        /** Cập nhật một chạm (từ v12): app tự tải APK bản mới rồi cài đè. Tiến độ báo về trang qua onUpdateState(...).
+         *  Trả false nếu địa chỉ không phải trang phát hành của app. */
+        @JavascriptInterface
+        public boolean update(String url) {
+            if (url == null || !url.startsWith(UPDATE_FROM)) return false;
+            if (updating) return true;
+            updating = true;
+            new Thread(() -> runUpdate(url), "update").start();
+            return true;
+        }
+    }
+
+    private int versionCode() {
+        try {
+            PackageInfo pi = getPackageManager().getPackageInfo(getPackageName(), 0);
+            return Build.VERSION.SDK_INT >= 28 ? (int) pi.getLongVersionCode() : pi.versionCode;
+        } catch (PackageManager.NameNotFoundException e) {
+            return 0;
+        }
+    }
+
+    // ---- cập nhật một chạm ---------------------------------------------------------------------------------------
+    // Tải APK về bộ nhớ đệm của app -> kiểm tra (đúng gói, số bản lớn hơn) -> giao cho trình cài của Android
+    // (PackageInstaller). Android tự kiểm chữ ký: file không ký bằng khoá của app thì không cài được.
+    // Android 12+: app tự cập nhật chính nó không cần hỏi lại (USER_ACTION_NOT_REQUIRED) sau khi người dùng đã cho phép
+    // "cài ứng dụng không rõ nguồn" cho app một lần; máy cũ hơn hiện một hộp xác nhận của hệ thống.
+    private void updateState(String state, double a, double b, String msg) {
+        runOnUiThread(() -> {
+            if (web != null) web.evaluateJavascript("window.onUpdateState && onUpdateState(" + js(state) + ", " + a + ", " + b
+                    + ", " + js(msg) + ")", null);
+        });
+    }
+
+    private void runUpdate(String url) {
+        File f = new File(getCacheDir(), UPDATE_FILE);
+        try {
+            HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+            c.setConnectTimeout(10000);
+            c.setReadTimeout(30000);
+            c.setRequestProperty("Accept-Encoding", "identity");
+            int code = c.getResponseCode();
+            if (code != 200) throw new IOException("trang phát hành trả mã " + code);
+            long total = c.getContentLengthLong(), got = 0, last = 0;
+            try (InputStream in = c.getInputStream(); OutputStream out = new FileOutputStream(f)) {
+                byte[] buf = new byte[1 << 16];
+                for (int n; (n = in.read(buf)) > 0; ) {
+                    out.write(buf, 0, n);
+                    got += n;
+                    long now = System.currentTimeMillis();
+                    if (now - last > 200) { last = now; updateState("download", got, total, null); }
+                }
+            } finally {
+                c.disconnect();
             }
+            if (total > 0 && got != total) throw new IOException("tải chưa đủ file");
+            PackageInfo pi = getPackageManager().getPackageArchiveInfo(f.getPath(), 0);
+            if (pi == null || !getPackageName().equals(pi.packageName)) throw new IOException("file tải về không phải app này");
+            long ver = Build.VERSION.SDK_INT >= 28 ? pi.getLongVersionCode() : pi.versionCode;
+            if (ver <= versionCode()) throw new IOException("file tải về không mới hơn bản đang dùng");
+            updateState("install", got, got, null);
+
+            PackageInstaller inst = getPackageManager().getPackageInstaller();
+            PackageInstaller.SessionParams p = new PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL);
+            p.setAppPackageName(getPackageName());
+            p.setSize(f.length());
+            if (Build.VERSION.SDK_INT >= 31) p.setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED);
+            int id = inst.createSession(p);
+            try (PackageInstaller.Session s = inst.openSession(id)) {
+                try (OutputStream out = s.openWrite("base.apk", 0, f.length()); InputStream in = new FileInputStream(f)) {
+                    byte[] buf = new byte[1 << 16];
+                    for (int n; (n = in.read(buf)) > 0; ) out.write(buf, 0, n);
+                    s.fsync(out);
+                }
+                Intent done = new Intent(this, UpdateReceiver.class);
+                int flags = PendingIntent.FLAG_UPDATE_CURRENT | (Build.VERSION.SDK_INT >= 31 ? PendingIntent.FLAG_MUTABLE : 0);
+                s.commit(PendingIntent.getBroadcast(this, id, done, flags).getIntentSender());
+            }
+            // cài xong Android đóng app (bản mới thay bản cũ); lỗi / cần xác nhận thì UpdateReceiver báo
+        } catch (Exception e) {
+            updating = false;
+            f.delete();
+            updateState("error", 0, 0, e.getMessage() != null ? e.getMessage() : e.toString());
+        }
+    }
+
+    /** Kết quả từ trình cài của Android: cần người dùng xác nhận -> mở hộp xác nhận; lỗi / huỷ -> báo về trang. */
+    public static class UpdateReceiver extends BroadcastReceiver {
+        @Override
+        @SuppressWarnings("deprecation")
+        public void onReceive(Context ctx, Intent intent) {
+            int status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE);
+            MainActivity a = current.get();
+            if (status == PackageInstaller.STATUS_PENDING_USER_ACTION) {
+                Intent confirm = intent.getParcelableExtra(Intent.EXTRA_INTENT);
+                if (confirm == null) return;
+                try {
+                    if (a != null) { a.startActivity(confirm); a.updateState("confirm", 0, 0, null); }
+                    else ctx.startActivity(confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+                } catch (RuntimeException e) {
+                    if (a != null) { a.updating = false; a.updateState("error", 0, 0, e.toString()); }
+                }
+                return;
+            }
+            if (a == null) return;
+            a.updating = false;
+            if (status == PackageInstaller.STATUS_SUCCESS) a.updateState("done", 0, 0, null);
+            else if (status == PackageInstaller.STATUS_FAILURE_ABORTED) a.updateState("cancel", 0, 0, null);
+            else a.updateState("error", 0, 0, intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE));
         }
     }
 
