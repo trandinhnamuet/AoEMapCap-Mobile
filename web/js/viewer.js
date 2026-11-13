@@ -565,6 +565,8 @@ export class Viewer {
     }
     for (const el of [u.top, u.bottom, u.tools, u.panels]) el.hidden = s.hide;
     u.mini.hidden = s.hide || !s.mini;
+    // minimap đang ẩn: hàng nút tầm nhìn lên đúng chỗ của minimap
+    this.root.style.setProperty("--mini-h", u.mini.hidden ? "-6px" : (this._miniH || 88) + "px");
     u.unhide.hidden = !s.hide;
     u.help.hidden = !s.help;
     u.score.hidden = !s.score;
@@ -763,8 +765,10 @@ export class Viewer {
       const f = I.hp[1] ? Math.max(0, Math.min(1, I.hp[0] / I.hp[1])) : 0;
       h += `<div class="hp"><div class="pbar ${f < 0.35 ? "low" : ""}"><i style="width:${f * 100}%"></i></div><span>${Math.ceil(I.hp[0])} / ${Math.round(I.hp[1])}</span></div>`;
     }
+    // thẻ nhỏ (v11): nhãn rút gọn để số luôn hiện đủ; chỉ số có biểu tượng thì CSS ẩn nhãn
+    const SHORT = { "Tốc chạy": "Chạy", "Tầm nhìn": "Nhìn", "Tầm bắn": "Bắn", "Tốc đánh": "Đánh", "Giáp xuyên": "G.xuyên" };
     if (I.rows.length) h += `<div class="stats">${I.rows.map(([k, l, v]) =>
-      `<span>${k ? this.icons.stat(k) : ""}<em>${esc(l)}</em> ${esc(v)}</span>`).join("")}</div>`;
+      `<span title="${esc(l)}">${k ? this.icons.stat(k) : ""}<em>${esc(SHORT[l] || l)}</em> ${esc(String(v).replace(" giây", "s"))}</span>`).join("")}</div>`;
     if (I.res) h += `<div class="line">${this.icons.res(I.res[0])} ${esc(I.res[1])}</div>`;
     for (const [name, frac, icon] of I.progress) {
       h += `<div class="prog">${this.icons.tech(icon, name)}<div><span>Nghiên cứu: ${esc(name)} <b>${Math.floor(frac * 100)}%</b></span>
@@ -892,6 +896,9 @@ export class Viewer {
     const k = Math.min(this.dpr, 2);
     c.width = Math.round(w * k); c.height = Math.round(h * k);
     c.style.width = w + "px"; c.style.height = h + "px";
+    this._miniH = h;                 // hàng nút tầm nhìn (.v-persp) nằm ngay dưới minimap, rộng bằng minimap
+    this.root.style.setProperty("--mini-w", w + "px");
+    this.root.style.setProperty("--mini-h", h + "px");
     const bg = document.createElement("canvas");
     bg.width = c.width; bg.height = c.height;
     const g = bg.getContext("2d");

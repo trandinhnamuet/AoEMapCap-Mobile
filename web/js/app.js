@@ -954,10 +954,11 @@ async function autoSave() {
         return;
       }
       const head = `Tự lưu trận mới <b>${done + 1}/${todo.length}</b>: `;
-      const live = await src.live(it.file, it.info, packBuf, t => autoNote(head + esc(t.replace("trên điện thoại", "").replace("…", "")) + "…"));
+      const live = await src.live(it.file, it.info, packBuf, t => autoNote(head + esc(/^Đang dựng/.test(t) ? "đang lưu"
+        : t.replace("…", "").replace(/^Đ/, "đ")) + "…"));
       if (!live) { autoNote("Chưa tự lưu được: máy tính cần AoE-MapCap v38 trở lên."); return; }
       APP.autoLive = live;
-      live.onProgress = p => autoNote(head + "đang dựng…", p.pos);
+      live.onProgress = p => autoNote(head + "đang lưu…", p.pos);        // (điện thoại dựng dữ liệu xem từ file ghi rồi lưu)
       const final = await live.done;
       APP.autoLive = null;
       await APP.store.saveMatch(it.file, final, it.info);

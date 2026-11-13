@@ -353,3 +353,44 @@ select { padding: 9px 10px; font-size: 14px; max-width: 58%; }
 .mt td.num { text-align: right; font-variant-numeric: tabular-nums; }
 .mt td.res { font-weight: 700; }
 .mt td.res.win { color: var(--win); } .mt td.res.lose { color: var(--lose); }
+
+/* ---- v11 (người dùng 13/11): thẻ thông tin unit còn 1/4 diện tích (nửa rộng, nửa cao); nút Toàn map / Đội N xuống ngay
+   dưới minimap, nhỏ lại, cả hàng không rộng hơn minimap (nhiều đội thì xuống dòng, 3 nút một hàng) -------------------- */
+.v-persp { position: absolute; right: 8px; top: calc(env(safe-area-inset-top) + 52px + var(--mini-h, 88px) + 5px);
+  width: var(--mini-w, 168px); margin: 0; gap: 3px; flex-wrap: wrap; overflow: visible; }
+.v-persp button { flex: 1 1 30%; min-width: 0; justify-content: center; gap: 2px; padding: 3px 2px; font-size: 10px;
+  border-radius: 9px; overflow: hidden; }
+.v-persp i { width: 5px; height: 5px; border-radius: 3px; flex: none; }
+.v-info { width: 104px; padding: 4px 5px; font-size: 9px; line-height: 1.25; border-radius: 7px; max-height: 26vh; }
+.v-info .ph { gap: 4px; margin-bottom: 2px; align-items: flex-start; }
+.v-info .ph b { font-size: 10px; line-height: 1.15; overflow-wrap: anywhere; }
+.v-info .ph .nm span { font-size: 8.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 62px; }
+.v-info .ph .x { width: 15px; height: 15px; border-radius: 4px; font-size: 8px; flex: none; }
+.v-info .ic, .v-panel.v-info .ic { width: 18px; height: 18px; border-radius: 3px; }
+.v-info .hp { gap: 4px; }
+.v-info .hp .pbar { height: 4px; }
+.v-info .hp span { font-size: 8.5px; }
+.v-info .stats { gap: 1px 6px; margin-top: 2px; }
+.v-info .stats em { margin-right: 2px; }
+.v-info .si, .v-info .ri { height: 9px; margin-right: 2px; }
+.v-info .line { margin-top: 2px; }
+.v-info .prog { gap: 4px; margin: 2px 0; }
+.v-info .prog span { font-size: 8.5px; }
+.v-info .pbar { height: 4px; margin-top: 2px; }
+.v-info .sub, .v-info .muted { font-size: 8px; margin: 3px 0 2px; }
+.v-info .cmd { grid-template-columns: repeat(auto-fill, 21px); gap: 2px; }
+.v-info .cmd button { width: 21px; height: 21px; padding: 1px; border-radius: 4px; }
+.v-info .cmd .ic { width: 17px; height: 17px; }
+@media (max-width: 560px) { .v-info { width: 96px; } }
+/* chỉ số của thẻ unit: 2 cột, có biểu tượng thì bỏ chữ nhãn (chỉ biểu tượng + số) -> thẻ thấp bằng nửa trước */
+.v-info .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 1px 4px; }
+.v-info .stats span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.v-info .stats .si + em { display: none; }
+.v-info .ph b { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; max-width: 58px; }
+/* nút Bản đồ: minimap là <canvas> nên bị "#viewer canvas { display: block }" đè mất thuộc tính hidden (không tắt được) */
+#viewer canvas.v-mini[hidden] { display: none; }
+.v-info { padding: 3px 4px; line-height: 1.12; }
+.v-info .ph { margin-bottom: 1px; }
+.v-info .hp { margin: 1px 0; }
+.v-info .stats { margin-top: 1px; gap: 0 4px; }
+
