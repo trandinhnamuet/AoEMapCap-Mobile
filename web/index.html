@@ -3,39 +3,169 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
-<meta name="theme-color" content="#0f1114">
+<meta name="theme-color" content="#101014">
 <title>AoE-MapCap</title>
 <link rel="icon" type="image/png" href="icon.png">
 <link rel="apple-touch-icon" href="icon.png">
 <link rel="stylesheet" href="css/app.css">
 </head>
 <body>
-<section id="setup" class="screen" hidden>
-  <header class="bar"><h1>AoE-MapCap</h1><span class="sub">Kết nối máy tính</span></header>
-  <form id="setup-form" class="setup">
-    <p>Trên máy tính: mở AoE-MapCap, vào mục <b>Điện thoại</b>, bật "Cho điện thoại xem trận" rồi quét mã QR hiện ra.
-      Điện thoại dùng 4G hay Wi-Fi nào cũng được; chỉ cần quét một lần.</p>
-    <p id="setup-camera" hidden>Quét mã bằng camera của điện thoại: trang này sẽ tự kết nối.</p>
-    <button type="button" id="scan-qr" class="primary" hidden>Quét mã QR</button>
-    <div id="setup-manual" class="setup-manual">
-      <p class="or">hoặc khi cùng Wi-Fi: nhập địa chỉ mạng nhà hiện cạnh mã QR</p>
-      <input id="pc-addr" placeholder="192.168.1.5:8765/abc123" autocapitalize="none" autocomplete="off"
-             autocorrect="off" spellcheck="false" inputmode="url">
-      <button type="submit" class="second">Kết nối</button>
-    </div>
-    <div id="setup-msg" class="msg"></div>
-    <button type="button" id="setup-offline" class="link" hidden>Xem trận đã lưu trên điện thoại</button>
-  </form>
-</section>
-<section id="list" class="screen" hidden>
-  <header class="bar"><h1>AoE-MapCap</h1><span class="sub">Xem lại trận</span>
-    <button id="pc-btn" class="pc" aria-label="Máy tính" hidden>Máy tính</button></header>
-  <div id="app-banner" class="note" hidden>Xem mượt hơn và lưu trận trên điện thoại bằng app AoE-MapCap:
-    <a id="app-dl" href="#">Tải app</a> · <a id="app-open" href="#">Mở trong app</a></div>
-  <div id="update-note" class="note" hidden></div>
-  <div id="list-note" class="note" hidden></div>
-  <div id="matches"></div>
-</section>
+<!-- Vỏ app: đầu trang + 4 trang (Trận / Máy tính / Cài đặt / Hướng dẫn) + thanh menu dưới. Giao diện theo app AoE-MapCap
+     trên máy tính (nền tối, đỏ - vàng). Trình xem trận (#viewer) là màn hình riêng, không có thanh menu. -->
+<div id="shell" class="screen" hidden>
+  <header class="top">
+    <img class="logo" src="icon.png" alt="">
+    <div class="tt"><h1 id="page-title">Trận đã ghi</h1><span id="page-sub" class="sub">Xem lại trận</span></div>
+    <span id="pc-state" class="pill" hidden></span>
+  </header>
+  <main id="pages">
+    <!-- Trận: toàn bộ lịch sử đấu như trên máy tính; chỉ trận đã lưu xem được khi máy tính tắt -->
+    <section id="list" class="page" hidden>
+      <div id="app-banner" class="note" hidden>Xem mượt hơn và lưu trận trên điện thoại bằng app AoE-MapCap:
+        <a id="app-dl" href="#">Tải app</a> · <a id="app-open" href="#">Mở trong app</a></div>
+      <div id="update-note" class="note" hidden></div>
+      <div id="list-note" class="note" hidden></div>
+      <div id="auto-note" class="note auto" hidden></div>
+      <div class="filters">
+        <input id="find" type="search" placeholder="Tìm tên người chơi, map…" autocomplete="off" autocapitalize="none"
+               spellcheck="false">
+        <div class="chips" id="list-chips">
+          <button data-f="all" class="on">Tất cả</button>
+          <button data-f="saved">Đã lưu</button>
+          <button data-f="win">Thắng</button>
+          <button data-f="lose">Thua</button>
+        </div>
+      </div>
+      <div id="list-count" class="count"></div>
+      <div id="matches"></div>
+    </section>
+
+    <!-- Máy tính: trạng thái liên kết (giữ tới khi người dùng tự bỏ) + ghép đôi -->
+    <section id="setup" class="page" hidden>
+      <div class="card" id="link-card" hidden>
+        <h2>Máy tính đã liên kết</h2>
+        <div class="kv"><span>Trạng thái</span><b id="link-state">—</b></div>
+        <div class="kv"><span>Đường kết nối</span><b id="link-via">—</b></div>
+        <div class="kv"><span>Địa chỉ mạng nhà</span><b id="link-lan">—</b></div>
+        <div class="kv"><span>Mã liên kết</span><b id="link-room">—</b></div>
+        <p class="hint">Liên kết được giữ cho tới khi bạn bấm Bỏ liên kết. Máy tính tắt thì vẫn xem được các trận đã lưu
+          trên điện thoại.</p>
+        <div class="btns">
+          <button type="button" id="link-retry" class="second">Kiểm tra kết nối</button>
+          <button type="button" id="link-remove" class="danger">Bỏ liên kết</button>
+        </div>
+      </div>
+      <form id="setup-form" class="card setup">
+        <h2 id="setup-title">Liên kết với máy tính</h2>
+        <p>Trên máy tính: mở AoE-MapCap, vào mục <b>Điện thoại</b>, bật "Cho điện thoại xem trận" rồi quét mã QR hiện ra.
+          Điện thoại dùng 4G hay Wi-Fi nào cũng được; chỉ cần quét một lần.</p>
+        <p id="setup-camera" hidden>Quét mã bằng camera của điện thoại: trang này sẽ tự kết nối.</p>
+        <button type="button" id="scan-qr" class="primary" hidden>Quét mã QR</button>
+        <div id="setup-manual" class="setup-manual">
+          <p class="or">hoặc khi cùng Wi-Fi: nhập địa chỉ mạng nhà hiện cạnh mã QR</p>
+          <input id="pc-addr" placeholder="192.168.1.5:8765/abc123" autocapitalize="none" autocomplete="off"
+                 autocorrect="off" spellcheck="false" inputmode="url">
+          <button type="submit" class="second">Kết nối</button>
+        </div>
+        <div id="setup-msg" class="msg"></div>
+      </form>
+    </section>
+
+    <!-- Cài đặt -->
+    <section id="settings" class="page" hidden>
+      <div class="card">
+        <h2>Tự lưu trận</h2>
+        <label class="row"><span>Tự lưu trận mới về điện thoại khi kết nối được máy tính</span>
+          <input type="checkbox" id="set-auto" class="sw"></label>
+        <label class="row"><span>Lưu các trận trong</span>
+          <select id="set-days"><option value="1">1 ngày gần nhất</option><option value="2">2 ngày gần nhất</option>
+            <option value="3">3 ngày gần nhất</option><option value="7">7 ngày gần nhất</option>
+            <option value="30">30 ngày gần nhất</option></select></label>
+        <label class="row"><span>Chỉ tự lưu khi dùng Wi-Fi (không dùng 4G)</span>
+          <input type="checkbox" id="set-wifi" class="sw"></label>
+        <p class="hint">Mỗi trận khoảng 10–20 MB. Trận đã lưu xem được cả khi máy tính tắt. Trận ngoài khoảng này vẫn
+          hiện trong danh sách, chạm vào là lấy về khi máy tính đang bật.</p>
+      </div>
+      <div class="card">
+        <h2>Bộ nhớ</h2>
+        <div class="kv"><span>Trận đã lưu</span><b id="st-matches">—</b></div>
+        <div class="kv"><span>Hình + dữ liệu game</span><b id="st-packs">—</b></div>
+        <label class="row"><span>Giới hạn dung lượng trận đã lưu</span>
+          <select id="set-max"><option value="250">250 MB</option><option value="500">500 MB</option>
+            <option value="1000">1 GB</option><option value="2000">2 GB</option><option value="5000">5 GB</option></select></label>
+        <p class="hint">Khi vượt giới hạn, app bỏ trận mở lâu nhất trước. Trận vừa mở luôn được giữ.</p>
+        <div class="btns">
+          <button type="button" id="st-clear" class="danger">Xoá mọi trận đã lưu</button>
+          <button type="button" id="st-clear-packs" class="second">Xoá hình + dữ liệu game</button>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Ứng dụng</h2>
+        <div class="kv"><span>Phiên bản</span><b id="app-ver">—</b></div>
+        <div class="btns">
+          <button type="button" id="app-check" class="second">Kiểm tra bản mới</button>
+          <a id="app-page" class="second btn" href="https://github.com/trandinhnamuet/AoEMapCap-Mobile/releases">Trang tải app</a>
+        </div>
+        <div id="app-check-msg" class="msg"></div>
+      </div>
+    </section>
+
+    <!-- Hướng dẫn: cơ chế hoạt động -->
+    <section id="about" class="page" hidden>
+      <div class="card">
+        <h2>App này làm gì</h2>
+        <p>Xem lại các trận Age of Empires đã được <b>AoE-MapCap trên máy tính</b> ghi lại: tua, đổi tốc độ, xem tầm nhìn
+          từng đội, bảng chỉ số, công nghệ, chạm vào unit hay nhà để xem thông tin — như trình xem replay trên máy tính.</p>
+      </div>
+      <div class="card">
+        <h2>Cơ chế hoạt động</h2>
+        <ol class="steps">
+          <li><b>Máy tính ghi trận.</b> AoE-MapCap mở trên máy tính là tự ghi mỗi trận bạn chơi thành một file ghi trận.
+            Điện thoại không ghi được trận, chỉ xem lại.</li>
+          <li><b>Liên kết một lần.</b> Ở mục <b>Máy tính</b>, quét mã QR trên AoE-MapCap. Mã này là "chìa khoá": ai có mã
+            thì xem được trận của máy tính đó, nên đừng chia sẻ. Liên kết được giữ tới khi bạn bấm Bỏ liên kết.</li>
+          <li><b>Lấy dữ liệu game một lần.</b> Lần đầu, máy tính gửi sang điện thoại gói hình (khoảng 23 MB) và gói dữ
+            liệu game (khoảng 1 MB), lấy từ bộ cài game trên chính máy tính đó. App không kèm sẵn hình của game.</li>
+          <li><b>Mỗi trận chỉ gửi file ghi.</b> Khi mở một trận chưa lưu, máy tính gửi file ghi trận (khoảng 10–15 MB cho
+            trận 20 phút). File này chỉ ghi "chuyện gì đã xảy ra": unit nào ở đâu, làm gì, lúc nào.</li>
+          <li><b>Điện thoại tự dựng và phát ngay.</b> App ghép file ghi với hình và dữ liệu game để dựng lại trận. Chỉ
+            vài giây là xem được phần đầu; phần sau dựng tiếp trong lúc bạn xem (góc trên hiện "Đang dựng trận …%").</li>
+          <li><b>Lưu trên điện thoại.</b> Trận dựng xong được lưu lại: lần sau mở là có ngay, và xem được cả khi máy tính
+            tắt. App tự lưu sẵn các trận mới (mặc định 2 ngày gần nhất) mỗi khi kết nối được máy tính.</li>
+        </ol>
+      </div>
+      <div class="card">
+        <h2>Kết nối đi đường nào</h2>
+        <p><b>Cùng Wi-Fi với máy tính:</b> dữ liệu đi thẳng trong mạng nhà, nhanh nhất.</p>
+        <p><b>Khác mạng (4G, Wi-Fi khác):</b> dữ liệu đi qua một trạm chuyển tiếp trên Internet. Trạm chỉ chuyển dữ
+          liệu giữa hai máy, không lưu lại trận hay hình game. Máy tính cần bật và có Internet.</p>
+        <p><b>Máy tính tắt:</b> danh sách vẫn hiện đủ lịch sử đấu, nhưng chỉ mở được các trận có nhãn "đã lưu".</p>
+      </div>
+      <div class="card">
+        <h2>Danh sách trận</h2>
+        <p>Hiện toàn bộ lịch sử đấu như trên máy tính. Nhãn <span class="tag saved">đã lưu</span> là trận đã có trên điện
+          thoại; <span class="tag cloud">chưa lưu</span> là trận còn nằm trên máy tính — chạm vào thì app lấy file ghi
+          từ máy tính (cần máy tính đang bật).</p>
+      </div>
+      <div class="card">
+        <h2>Khi xem trận</h2>
+        <p>Kéo để di chuyển, chụm hai ngón để phóng to, chạm đúp để phóng to nhanh. Chạm unit hay nhà để xem thông tin.
+          Nút <b>Tự động</b>: máy quay tự tới nơi đang giao tranh. <b>Bảng</b>: chỉ số từng người, chạm tên đội để xem tầm
+          nhìn đội đó. Nút <b>?</b> trong trình xem liệt kê đầy đủ cách dùng.</p>
+      </div>
+    </section>
+  </main>
+  <nav class="tabs" id="tabs">
+    <button data-tab="list"><svg viewBox="0 0 24 24"><path d="M13 3a9 9 0 1 0 8.5 12h-2.2A7 7 0 1 1 13 5v3l4-4-4-4v3zm-1 5v5l4 2.4.8-1.3-3.3-2V8H12z"/></svg><span>Trận</span></button>
+    <button data-tab="setup" id="pc-btn"><svg viewBox="0 0 24 24"><path d="M3 4h18a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1h-7v2h3v2H7v-2h3v-2H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zm1 2v9h16V6H4z"/></svg><span>Máy tính</span></button>
+    <button data-tab="settings"><svg viewBox="0 0 24 24"><path d="M19.4 13a7.5 7.5 0 0 0 0-2l2-1.6-2-3.4-2.4 1a7.6 7.6 0 0 0-1.7-1L15 3.5h-4l-.4 2.5a7.6 7.6 0 0 0-1.7 1l-2.4-1-2 3.4 2 1.6a7.5 7.5 0 0 0 0 2l-2 1.6 2 3.4 2.4-1c.5.4 1.1.7 1.7 1l.4 2.5h4l.4-2.5c.6-.3 1.2-.6 1.7-1l2.4 1 2-3.4-2-1.6zM13 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z" transform="translate(-1 0)"/></svg><span>Cài đặt</span></button>
+    <button data-tab="about"><svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg><span>Hướng dẫn</span></button>
+  </nav>
+  <div id="dlg" class="dlg" hidden><div class="box"><p id="dlg-text"></p>
+    <div class="btns"><button type="button" id="dlg-act" class="primary" hidden></button>
+      <button type="button" id="dlg-ok" class="second">Đóng</button></div></div></div>
+</div>
+
 <section id="viewer" class="screen" hidden>
   <canvas></canvas>
   <div class="v-top">

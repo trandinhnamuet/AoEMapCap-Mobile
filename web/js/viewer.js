@@ -36,6 +36,7 @@ export class Viewer {
     const blobOf = name => new Blob([this.m.section(name)], { type: "image/jpeg" });
     await this.R.setTerrain(M, blobOf);
     this.R.setIndex(M, this.m.index);
+    this.R.setOutline(M);
     this.fog = new Uint8Array(M.map_w * M.map_h);
     this.fogDim = Math.round(M.fog_dim * 255);
     this.persp = M.rec_team >= 0 ? M.rec_team : null;
@@ -53,6 +54,7 @@ export class Viewer {
     this.selected = recTeam && recTeam.players.length ? recTeam.players[0] : (M.players[0] || {}).index ?? null;
     this.sel = null;               // unit / công trình đang chọn: {kind: "u" | "s", uid, owner}
     this.follow = false;
+    this.autoCam = false;          // máy quay tự động (setAutoCam)
     this.drawn = []; this.drawnS = [];
     this.inst = { statics: new Float32Array(10 * 4096), units: new Float32Array(10 * 4096) };
     this.dirtyUnits = true; this.dirtyStatics = true; this.dirtyFog = true;
@@ -108,6 +110,7 @@ export class Viewer {
     const w = Math.max(1, Math.round(c.clientWidth * dpr)), h = Math.max(1, Math.round(c.clientHeight * dpr));
     if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
     this.dpr = dpr;
+    if (this.R) this.R.outlinePx = Math.max(1.5, dpr * 0.9);
   }
 
   fitZoom() {
@@ -396,7 +399,7 @@ export class Viewer {
                 build: q(".v-build") };
     const u = this.ui;
     u.tools = add("v-tools", "div", [["score", "Bảng"], ["techs", "Công nghệ"], ["mini", "Bản đồ"],
-      ["follow", "Khoá"], ["fit", "Toàn cảnh"], ["hide", "Ẩn"], ["help", "?"]]
+      ["auto", "Tự động"], ["follow", "Khoá"], ["fit", "Toàn cảnh"], ["hide", "Ẩn"], ["help", "?"]]
       .map(([a, t]) => `<button data-a="${a}">${t}</button>`).join(""));
     u.panels = add("v-panels");
     u.techs = document.createElement("div"); u.techs.className = "v-panel v-techs"; u.panels.appendChild(u.techs);
@@ -439,9 +442,15 @@ export class Viewer {
     this._drawAges();
     // bảng: chạm vào hàng người chơi = chọn; nút đổi kinh tế / quân sự; ô lệnh = xem tên + giá
     u.panels.onclick = e => {
-      const t = e.target.closest("[data-pl],[data-x],[data-cmd],[data-close]");
+      const t = e.target.closest("[data-pl],[data-team],[data-x],[data-cmd],[data-close]");
       if (!t) return;
-      if (t.dataset.pl) this.selectPlayer(+t.dataset.pl);
+      if (t.dataset.team !== undefined) { this.setPersp(+t.dataset.team); this._renderHud(); }
+      else if (t.dataset.pl) {             // chạm người chơi: chọn + tới nhà chính + xem tầm nhìn đội của người đó
+        const idx = +t.dataset.pl;
+        const k = this.m.meta.teams.findIndex(tm => tm.players.includes(idx));
+        if (k >= 0 && this.persp !== k && t.closest(".v-score")) this.setPersp(k);
+        this.selectPlayer(idx);
+      }
       else if (t.dataset.x !== undefined) { this.scoreMode = +t.dataset.x; this._renderHud(); }
       else if (t.dataset.cmd !== undefined) { const c = this._cmd[+t.dataset.cmd]; if (c) this.toast(c.name + (c.cost ? ` (${c.cost})` : "")); }
       else if (t.dataset.close === "info") this.selectUnit(null);
@@ -479,6 +488,8 @@ export class Viewer {
       ["Bảng", "bảng tỉ số: Kinh tế / Quân sự; chạm tên người chơi để chọn và bay tới nhà chính"],
       ["Công nghệ", "công nghệ đã xong (giờ xong) + đang nghiên cứu bao nhiêu % của người chơi đang chọn"],
       ["Bản đồ", "minimap: chạm / kéo để đưa máy quay tới"],
+      ["Tự động", "máy quay tự tới nơi đang giao tranh; không có giao tranh thì xem nhà đang xây, dân đang làm việc. Tự kéo máy quay thì tắt"],
+      ["Bảng → chạm đội / người chơi", "xem tầm nhìn của đội đó (chạm người chơi: tới nhà chính của họ)"],
       ["Toàn map / Đội", "tầm nhìn cả bản đồ hoặc của từng đội (sương mù)"],
       ["−15s / +15s", "lùi / tới 15 giây; − / + đổi tốc độ 0,25x … 16x, chạm số tốc độ: về 1x"],
       ["Ẩn", "ẩn toàn bộ HUD để xem trận"],
@@ -492,11 +503,13 @@ export class Viewer {
   action(a) {
     const s = this.show;
     if (a === "score" || a === "techs" || a === "mini" || a === "help" || a === "hide") s[a] = !s[a];
+    else if (a === "auto") this.setAutoCam(!this.autoCam);
     else if (a === "follow") {
+      this._takeCamera();
       if (this.follow) { this.follow = false; this.toast("Bỏ khoá máy quay"); }
       else if (this.sel && this.sel.kind === "u") { this.follow = true; this.toast("Khoá máy quay theo unit đang chọn"); }
       else this.toast("Chạm chọn một unit trước để khoá máy quay");
-    } else if (a === "fit") { this.follow = false; this.fitView(); }
+    } else if (a === "fit") { this._takeCamera(); this.follow = false; this.fitView(); }
     if (a === "techs" && s.techs && this.selected == null) this.selected = (this.m.meta.players[0] || {}).index;
     this._updateUi();
     this._renderHud();
@@ -525,7 +538,7 @@ export class Viewer {
     for (const b of u.persp.children) b.classList.toggle("on", b.dataset.p === (this.persp === null ? "" : String(this.persp)));
     for (const b of u.tools.children) {
       const a = b.dataset.a;
-      b.classList.toggle("on", a === "follow" ? this.follow : !!s[a]);
+      b.classList.toggle("on", a === "follow" ? this.follow : a === "auto" ? this.autoCam : !!s[a]);
     }
     for (const el of [u.top, u.bottom, u.tools, u.panels]) el.hidden = s.hide;
     u.mini.hidden = s.hide || !s.mini;
@@ -549,7 +562,7 @@ export class Viewer {
       if (u.build.textContent !== bt) { u.build.textContent = bt; u.build.hidden = !bt; }
     }
     const now = performance.now();
-    const want = this.show.score || this.show.techs || this.sel;
+    const want = this.show.score || this.show.techs || this.sel || this.autoCam;
     if (want && !this._hudBusy && (fi !== this._hudFrame || this._hudDirty) && now - (this._hudT || 0) >= HUD_MS) {
       this._hudBusy = true; this._hudT = now; this._hudDirty = false;
       this._refreshHud(fi).catch(e => console.warn(e)).finally(() => { this._hudBusy = false; });
@@ -563,7 +576,93 @@ export class Viewer {
     this.hudStatics = await this.hud.statics(this.state.sIdx);
     this.hs = hs;
     this._hudFrame = fi;
+    if (this.autoCam && hs) this._director(hs);
     this._renderHud();
+  }
+
+  // ---- máy quay tự động (như phím A của trình xem máy tính) -----------------------------------------------
+  // Luôn khoá theo một unit trong tầm nhìn đang xem: nơi đang giao tranh (unit / nhà mất máu, unit chết) -> công trình
+  // lớn đang xây -> nhà (House) đang xây -> dân đang làm việc. Tự kéo máy quay / chạm chọn unit thì tắt.
+  setAutoCam(on) {
+    this.autoCam = !!on;
+    this._dir = { hp: new Map(), heat: new Map(), t: -1, lockAt: 0, rank: -1, uid: null, label: "" };
+    if (on) { this._hudT = 0; this._hudDirty = true; }
+    this.toast(on ? "Máy quay tự động: BẬT (giao tranh → xây nhà → dân làm việc)" : "Máy quay tự động: tắt", 2200);
+    this._updateUi();
+  }
+
+  _takeCamera() { if (this.autoCam) this.setAutoCam(false); }
+
+  _dirLock(uid, owner, rank, label) {
+    const D = this._dir;
+    if (D.uid !== uid) {
+      this.sel = { kind: "u", uid, owner };
+      this.follow = true;
+      this.cam.zoom = Math.max(this.cam.zoom, 0.55 * this.dpr);
+      this._hudDirty = true;
+      if (D.label !== label) this.toast("Tự động: " + label, 1400);
+    }
+    D.uid = uid; D.rank = rank; D.label = label; D.lockAt = performance.now();
+  }
+
+  _director(hs) {
+    const D = this._dir, st = this.state, H = this.hud.H;
+    if (!H) return;
+    const tms = this.m.t[Math.max(0, st.frame)];
+    if (D.t < 0 || tms < D.t || tms - D.t > 6000) { D.hp = new Map(); D.heat = new Map(); D.uid = null; D.rank = -1; }   // vừa tua
+    D.t = tms;
+    for (const [k, v] of D.heat) { const n = v * 0.7; if (n < 1) D.heat.delete(k); else D.heat.set(k, n); }
+    const hp = new Map();
+    const cellOf = i => Math.floor(st.x[i] / 6) * 4096 + Math.floor(st.y[i] / 6);
+    const army = new Map(), any = new Map();        // ô -> unit đại diện (ưu tiên quân)
+    let build = null, house = null;
+    const workers = [];
+    for (const i of this.drawn) {
+      if (st.flags[i] & F_DOP) continue;
+      const uid = st.uid[i], row = hs.units.get(uid);
+      if (!row) continue;
+      const def = H.defs[row[1]];
+      if (!def) continue;
+      const utype = def[1], cls = def[2], h = row[2], status = row[3];
+      if (utype !== 70 && utype !== 80) continue;
+      if (st.owner[i] <= 0) continue;
+      hp.set(uid, h);
+      const ph = D.hp.get(uid);
+      const alive = status < 3 && h > 0;
+      const c = cellOf(i);
+      if (ph !== undefined && h < ph - 0.01) {
+        const dmg = Math.min(ph - h, 60) * (utype === 70 ? 1 : 0.4) + (alive ? 0 : 25);
+        D.heat.set(c, (D.heat.get(c) || 0) + dmg);
+      }
+      if (!alive) continue;
+      if (utype === 70) {
+        if (cls !== 4) { if (!army.has(c)) army.set(c, i); }
+        else workers.push(i);
+        if (!any.has(c)) any.set(c, i);
+      } else if (status === 0 && ph !== undefined && h > ph + 0.01) {       // công trình đang xây (máu tăng dần)
+        if (def[0] === 70) house = house ?? i; else build = build ?? i;
+      }
+    }
+    D.hp = hp;
+    // nơi nóng nhất còn unit để bám
+    let best = null, bh = 12;
+    for (const [c, v] of D.heat) if (v > bh && (army.has(c) || any.has(c))) { best = c; bh = v; }
+    const now = performance.now();
+    const curOk = D.uid !== null && st.pos.has(D.uid) && hp.has(D.uid) && (hs.units.get(D.uid) || [])[3] < 3;
+    const held = now - D.lockAt;
+    let pick = null;
+    if (best !== null) pick = [army.get(best) ?? any.get(best), 4, "giao tranh"];
+    else if (build !== null) pick = [build, 3, "công trình đang xây"];
+    else if (house !== null) pick = [house, 2, "nhà đang xây"];
+    else if (workers.length) pick = [workers[Math.floor(Math.random() * workers.length)], 1, "dân làm việc"];
+    if (!pick) return;
+    const [i, rank, label] = pick;
+    // đổi mục tiêu: mục tiêu cũ mất; hoặc việc quan trọng hơn sau 2 s; hoặc cùng / kém quan trọng sau 8 s (giao tranh: 4 s)
+    const cur = D.uid !== null ? st.pos.get(D.uid) : undefined;
+    const sameCell = rank === 4 && cur !== undefined && cellOf(cur) === best;
+    if (curOk && sameCell) { D.rank = 4; D.label = label; return; }
+    if (curOk && !(rank > D.rank ? held > 2000 : held > (D.rank === 4 ? 4000 : 8000))) return;
+    this._dirLock(st.uid[i], st.owner[i], rank, label);
   }
 
   _renderHud() {
@@ -585,7 +684,7 @@ export class Viewer {
       let body = "";
       const grouped = M.teams.some(t => t.players.length > 1);
       M.teams.forEach((t, k) => {
-        if (grouped) body += `<tr class="team"><td colspan="${cols.length + 1}">Đội ${k + 1}</td></tr>`;
+        if (grouped) body += `<tr class="team ${this.persp === k ? "on" : ""}" data-team="${k}"><td colspan="${cols.length + 1}">Đội ${k + 1}<em>${this.persp === k ? "đang xem tầm nhìn" : "chạm để xem tầm nhìn"}</em></td></tr>`;
         for (const idx of t.players) {
           const pl = players.find(p => p.index === idx);
           const p = hs.p[idx];
@@ -800,6 +899,7 @@ export class Viewer {
   _miniPointer(e) {
     const c = this.ui.mini, M = this.m.meta;
     const r = c.getBoundingClientRect();
+    this._takeCamera();
     this.follow = false;
     this.cam.x = (e.clientX - r.left) / r.width * M.full_w;
     this.cam.y = (e.clientY - r.top) / r.height * M.full_h;
@@ -840,6 +940,7 @@ export class Viewer {
       const cur = [...pts.values()];
       const mid1 = cur.reduce((s, q) => [s[0] + q[0] / cur.length, s[1] + q[1] / cur.length], [0, 0]);
       const z = this.cam.zoom / this.dpr;
+      this._takeCamera();
       this.follow = false;                                        // tự kéo máy quay: bỏ khoá
       this.cam.x -= (mid1[0] - mid0[0]) / z;
       this.cam.y -= (mid1[1] - mid0[1]) / z;
@@ -857,8 +958,8 @@ export class Viewer {
         const r = c.getBoundingClientRect();
         const hit = this._pick((e.clientX - r.left) * this.dpr, (e.clientY - r.top) * this.dpr);
         // chạm chỗ trống: bỏ chọn (chờ xem có phải chạm đúp không)
-        if (hit) this.selectUnit(hit);
-        else setTimeout(() => { if (performance.now() - lastTap >= 290 && this.sel) this.selectUnit(null); }, 300);
+        if (hit) { this._takeCamera(); this.selectUnit(hit); }
+        else setTimeout(() => { if (performance.now() - lastTap >= 290 && this.sel && !this.autoCam) this.selectUnit(null); }, 300);
       }
       pts.delete(e.pointerId);
       if (pts.size < 2) pinch = null;
@@ -901,6 +1002,7 @@ export class Viewer {
       else if (K === "m") this.action("mini");
       else if (K === "h") this.action("hide");
       else if (K === "l") this.action("follow");
+      else if (K === "a") this.action("auto");
       else if (K === "Home") this.action("fit");
       else if (K === "?" || K === "/" || K === "Escape") this.action("help");
       else used = false;

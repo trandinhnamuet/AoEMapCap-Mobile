@@ -20,8 +20,15 @@ const CLOUD = !IN_APP && location.protocol === "https:";      // trang trên tr�
 const PAIRED = IN_APP || CLOUD;                                // ghép đôi + lưu trận trên điện thoại
 const PC_KEY = "aoe.pc";
 const ROOM_KEY = "aoe.room";
-const MAX_SAVED = 40;           // số trận giữ trên điện thoại, bỏ trận mở lâu nhất
-const MAX_SAVED_BYTES = 500e6;  // và tổng dung lượng trận đã lưu (máy ít bộ nhớ không bị đầy); trận vừa mở luôn giữ
+const MAX_SAVED = 400;          // số trận giữ trên điện thoại (giới hạn chính là dung lượng, xem SET.maxBytes)
+const LIST_KEY = "/l/list";     // danh sách trận lần gần nhất lấy từ máy tính (lịch sử đấu hiện cả khi máy tính tắt)
+// Cài đặt của người dùng (trang Cài đặt), lưu trong localStorage
+const SET = {
+  auto: () => localStorage.getItem("aoe.auto") !== "0",                  // tự lưu trận mới khi kết nối được máy tính
+  days: () => +(localStorage.getItem("aoe.autoDays") || 2),               // ... các trận trong mấy ngày gần nhất
+  wifi: () => localStorage.getItem("aoe.autoWifi") !== "0",              // ... chỉ khi dùng Wi-Fi
+  maxBytes: () => +(localStorage.getItem("aoe.maxMB") || 500) * 1e6,      // tổng dung lượng trận đã lưu; trận vừa mở luôn giữ
+};
 const SIZE_GUESS = 20e6;        // trận lưu từ bản trước chưa ghi cỡ
 const WEB_VERSION = 2;          // .aoeweb có bảng thông số (mapcap/webexport.py); trận lưu bản cũ thì lấy lại khi được
 const GAMEDATA_KEY = "/s/gamedata1";   // gói dữ liệu game phiên bản 1 (mapcap/webexport.py GAMEDATA_VERSION)
@@ -83,11 +90,21 @@ class Store {
     let n = 0, total = 0;
     for (const e of await this.saved()) {          // mới mở trước: giữ tới khi quá số trận / dung lượng
       n++; total += e.size || SIZE_GUESS;
-      if (n === 1 || (n <= MAX_SAVED && total <= MAX_SAVED_BYTES)) continue;
-      const ok = encodeURIComponent(e.file);
-      await this.c.delete("/m/" + ok); await this.c.delete("/i/" + ok);
+      if (n === 1 || (n <= MAX_SAVED && total <= SET.maxBytes())) continue;
+      await this.remove(e.file);
     }
   }
+  async remove(file) {
+    const k = encodeURIComponent(file);
+    await this.c.delete("/m/" + k); await this.c.delete("/i/" + k);
+  }
+  async clearMatches() { for (const e of await this.saved()) await this.remove(e.file); }
+  async clearPacks() { await this.c.delete("/s/sprites"); await this.c.delete(GAMEDATA_KEY); }
+  async has(key) { return !!(await this.c.match(key)); }
+  async getList() {
+    try { const r = await this.c.match(LIST_KEY); return r ? await r.json() : null; } catch { return null; }
+  }
+  async putList(items) { await this.put(LIST_KEY, new TextEncoder().encode(JSON.stringify(items))); }
   async touch(file) {
     const k = "/i/" + encodeURIComponent(file);
     const r = await this.c.match(k);
@@ -336,10 +353,10 @@ class Source {
     if (!gd) return null;
     mark("gamedata");
     let rec;
-    onStatus && onStatus("Đang tải trận…");
+    onStatus && onStatus("Đang lấy file ghi trận từ máy tính…");
     try {
       rec = await this._retry(() => this._download("api/rec?f=" + encodeURIComponent(file),
-        (f, got) => onStatus && onStatus("Đang tải trận… " + pct(f, got))), onStatus);
+        (f, got) => onStatus && onStatus("Đang lấy file ghi trận từ máy tính… " + pct(f, got))), onStatus);
     } catch (e) { if (e.status === 404) return null; throw e; }
     mark("rec");
     onStatus && onStatus("Đang dựng trận trên điện thoại…");
@@ -376,9 +393,42 @@ class Source {
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 let packPromise = null;
+// trạng thái vỏ app: nguồn trận, bộ nhớ, danh sách (từ máy tính hoặc bản nhớ lần trước), trận đã lưu, máy tính có đang
+// kết nối được không (null = chưa biết), bộ lọc danh sách, lượt tự lưu đang chạy
+const APP = { src: null, store: null, items: [], saved: new Map(), online: null, filter: "all", find: "", autoRun: false,
+  autoLive: null, via: null };
+const TABS = {
+  list: ["Trận đã ghi", "Toàn bộ lịch sử đấu trên máy tính của bạn"],
+  setup: ["Máy tính", "Liên kết với AoE-MapCap trên máy tính"],
+  settings: ["Cài đặt", "Tự lưu trận, bộ nhớ, phiên bản"],
+  about: ["Hướng dẫn", "App hoạt động thế nào"],
+};
 
 function show(id) {
   for (const el of document.querySelectorAll(".screen")) el.hidden = el.id !== id;
+}
+
+function showTab(tab) {
+  if (!TABS[tab]) tab = "list";
+  show("shell");
+  for (const el of document.querySelectorAll(".page")) el.hidden = el.id !== tab;
+  for (const b of $("#tabs").children) b.classList.toggle("on", b.dataset.tab === tab);
+  $("#page-title").textContent = TABS[tab][0];
+  $("#page-sub").textContent = TABS[tab][1];
+  $("#pages").scrollTop = 0;
+  if (tab === "setup") renderLink();
+  if (tab === "settings") renderSettings();
+}
+
+// hộp thoại báo / hỏi: act = {label, fn} thêm một nút hành động
+function dialog(text, act) {
+  $("#dlg-text").textContent = text;
+  const b = $("#dlg-act");
+  b.hidden = !act;
+  if (act) { b.textContent = act.label; b.onclick = () => { $("#dlg").hidden = true; act.fn(); }; }
+  $("#dlg-ok").textContent = act ? "Để sau" : "Đóng";
+  $("#dlg-ok").onclick = () => { $("#dlg").hidden = true; };
+  $("#dlg").hidden = false;
 }
 
 function resultClass(res) {
@@ -411,39 +461,65 @@ function savedLink() {
   return { lan: localStorage.getItem(PC_KEY), room: localStorage.getItem(ROOM_KEY) };
 }
 
+// Liên kết với máy tính chỉ đổi ở hai chỗ: ghép đôi thành công (connect) và người dùng bấm Bỏ liên kết. Mở trang Máy
+// tính, kết nối lỗi, máy tính tắt... đều KHÔNG xoá liên kết (trước v9 bấm nút Máy tính đưa về màn hình ghép đôi trống,
+// người dùng tưởng mất kết nối).
 function saveLink(link) {
   for (const [k, v] of [[PC_KEY, link.lan], [ROOM_KEY, link.room]]) {
     if (v) localStorage.setItem(k, v); else localStorage.removeItem(k);
   }
 }
 
-// thử kết nối rồi lưu; tải lại trang để mọi phần dùng nguồn mới
-async function connect(link, store) {
+// thử kết nối bằng liên kết mới; được thì lưu và về danh sách, không được thì giữ nguyên liên kết cũ
+async function connect(link) {
   const msg = $("#setup-msg");
   msg.textContent = "Đang kết nối máy tính…"; msg.className = "msg";
-  try { await new Source(link, store).list(); }
+  const src = new Source(link, APP.store);
+  try { await src.list(); }
   catch (err) {
     msg.textContent = "Không kết nối được máy tính (" + err.message + "). Kiểm tra: AoE-MapCap trên máy tính đang mở, " +
-      "đã bật mục Điện thoại" + (link.room ? " và máy tính có Internet." : "; nhập tay địa chỉ thì phải cùng Wi-Fi.");
+      "đã bật mục Điện thoại" + (link.room ? " và máy tính có Internet." : "; nhập tay địa chỉ thì phải cùng Wi-Fi.") +
+      (APP.src && APP.src.linked ? " Liên kết cũ vẫn được giữ." : "");
     msg.className = "msg err";
     return false;
   }
   saveLink(link);
-  location.replace(location.pathname);
+  msg.textContent = "";
+  APP.src = src; APP.online = null; APP.items = [];
+  showTab("list");
+  loadList();
   return true;
 }
 
-function showSetup(store) {
-  show("setup");
-  const inp = $("#pc-addr"), msg = $("#setup-msg");
-  inp.value = localStorage.getItem(PC_KEY) || "";
-  msg.textContent = ""; msg.className = "msg";
-  $("#setup-offline").hidden = !store;
-  $("#setup-offline").onclick = () => showList(new Source(null, store));
+// trang Máy tính: thẻ trạng thái liên kết + ghép đôi (quét QR / nhập tay)
+function renderLink() {
+  const link = APP.src ? APP.src.link : {};
+  const linked = !!(link.lan || link.room);
+  const direct = !!link.base;                  // trang mở thẳng từ máy tính (phát triển / kiểm thử)
+  $("#link-card").hidden = !linked;
+  $("#setup-title").textContent = linked ? "Liên kết lại / đổi máy tính" : "Liên kết với máy tính";
+  if (linked) {
+    const st = $("#link-state");
+    st.textContent = APP.online === null ? "Đang kiểm tra…" : APP.online ? "Đang kết nối được"
+      : "Không kết nối được (máy tính tắt hoặc mất mạng)";
+    st.className = APP.online ? "ok" : APP.online === false ? "bad" : "";
+    $("#link-via").textContent = !APP.online ? "—" : APP.via === "lan" ? "Mạng nhà (Wi-Fi), đi thẳng"
+      : APP.via === "relay" ? "Qua Internet (trạm chuyển tiếp)" : "—";
+    $("#link-lan").textContent = link.lan || "—";
+    $("#link-room").textContent = link.room ? link.room.slice(0, 4) + "…" + link.room.slice(-2) : "—";
+  }
+  const inp = $("#pc-addr");
+  if (!inp.value) inp.value = link.lan || "";
   const app = window.AoEApp;
   $("#scan-qr").hidden = !(app && app.scanQr);
   $("#setup-camera").hidden = !CLOUD;
-  $("#setup-manual").hidden = CLOUD;          // trang https trên trạm không gọi được địa chỉ http trong mạng nhà
+  $("#setup-manual").hidden = CLOUD || direct;     // trang https trên trạm không gọi được địa chỉ http trong mạng nhà
+  $("#setup-form").hidden = direct;
+}
+
+function bindSetup() {
+  const inp = $("#pc-addr"), msg = $("#setup-msg");
+  const app = window.AoEApp;
   $("#scan-qr").onclick = () => {
     msg.textContent = "Đang mở máy quét…"; msg.className = "msg";
     // app gọi lại: (nội dung mã, null) | (null, lỗi) | (null, null) = huỷ
@@ -453,7 +529,7 @@ function showSetup(store) {
       const link = parsePair(text);
       if (!link) { msg.textContent = "Mã QR này không phải của AoE-MapCap."; msg.className = "msg err"; return; }
       if (link.lan) inp.value = link.lan;
-      connect(link, store);
+      connect(link);
     };
     app.scanQr();
   };
@@ -462,8 +538,17 @@ function showSetup(store) {
     const link = parsePair(inp.value);
     if (!link) { msg.textContent = "Địa chỉ dạng 192.168.1.5:8765/abc123"; msg.className = "msg err"; return; }
     if (!link.room) link.room = localStorage.getItem(ROOM_KEY);   // giữ phòng đã ghép (đổi địa chỉ mạng nhà)
-    connect(link, store);
+    connect(link);
   };
+  $("#link-retry").onclick = async () => { APP.online = null; renderLink(); await loadList(); renderLink(); };
+  $("#link-remove").onclick = () => dialog("Bỏ liên kết với máy tính này?\nCác trận đã lưu trên điện thoại vẫn được giữ. " +
+    "Muốn xem trận mới phải quét lại mã QR.", { label: "Bỏ liên kết", fn: () => {
+      saveLink({});
+      if (APP.autoLive) APP.autoLive.cancel();
+      APP.src = new Source(null, APP.store); APP.online = false; APP.via = null;
+      $("#pc-addr").value = "";
+      renderLink(); loadList();
+    } });
 }
 
 // trình duyệt trên Android (quét QR bằng camera thường): mời tải / mở app (mở app thì app ghép đôi luôn)
@@ -482,57 +567,274 @@ async function appBanner(link) {
 }
 
 // trong app: có bản mới hơn thì báo (hỏi GitHub tối đa một lần mỗi lần mở app)
-async function checkUpdate() {
+async function checkUpdate(force) {
   const app = window.AoEApp;
-  if (!app || !app.versionCode || sessionStorage.getItem("aoe.upd")) return;
+  if (!app || !app.versionCode || (!force && sessionStorage.getItem("aoe.upd"))) return null;
   sessionStorage.setItem("aoe.upd", "1");
   const last = await latestApp();
-  if (!last || last.code <= +app.versionCode()) return;
+  if (!last || last.code <= +app.versionCode()) return last ? false : null;
   const n = $("#update-note");
   n.innerHTML = `Có bản app mới (${esc(last.tag)}). <a href="${esc(last.url)}">Tải về</a>`;
   n.hidden = false;
+  const tab = $("#tabs [data-tab=settings]");
+  if (tab && !tab.querySelector(".dot")) tab.insertAdjacentHTML("beforeend", `<i class="dot"></i>`);
+  return last;
 }
 
-async function showList(src) {
-  show("list");
-  const box = $("#matches"), note = $("#list-note");
-  note.hidden = true;
-  box.innerHTML = `<div class="msg">Đang tải danh sách…</div>`;
-  let items, err = null;
-  try { items = await src.list(); } catch (e) { err = e; }
-  const saved = src.store ? await src.store.saved() : [];
-  const have = new Set(saved.map(s => s.file));
-  if (err) {
-    if (!saved.length) { box.innerHTML = `<div class="msg err">${esc(err.message)}</div>`; return; }
-    items = saved.map(s => ({ file: s.file, info: s.info }));
-    note.textContent = "Không kết nối được máy tính: chỉ hiện trận đã lưu trên điện thoại.";
-    note.hidden = false;
+// ---- trang Cài đặt -------------------------------------------------------------------------------------
+const mb = b => b >= 1e9 ? (b / 1e9).toFixed(2).replace(".", ",") + " GB" : Math.round(b / 1e6) + " MB";
+
+async function renderSettings() {
+  $("#set-auto").checked = SET.auto();
+  $("#set-days").value = String(SET.days());
+  $("#set-wifi").checked = SET.wifi();
+  $("#set-max").value = String(Math.round(SET.maxBytes() / 1e6));
+  const app = window.AoEApp;
+  $("#app-ver").textContent = app && app.versionCode ? "v" + app.versionCode() + " (app Android)" : "trang web (không phải app)";
+  $("#app-check").hidden = !(app && app.versionCode);
+  const st = APP.store;
+  if (!st) {
+    $("#st-matches").textContent = "trang này không lưu trận (chỉ app / trang trên trạm)";
+    $("#st-packs").textContent = "—";
+    return;
   }
-  if (!items.length) { box.innerHTML = `<div class="msg">Chưa có trận nào.</div>`; return; }
+  const saved = await st.saved();
+  const total = saved.reduce((a, e) => a + (e.size || SIZE_GUESS), 0);
+  $("#st-matches").textContent = saved.length ? `${saved.length} trận, ${mb(total)}` : "chưa có trận nào";
+  const [sp, gd] = [await st.has("/s/sprites"), await st.has(GAMEDATA_KEY)];
+  $("#st-packs").textContent = sp && gd ? "đã có (khoảng 24 MB)" : sp ? "có hình, chưa có dữ liệu game" : "chưa tải";
+}
+
+function bindSettings() {
+  const set = (k, v) => { localStorage.setItem(k, v); };
+  $("#set-auto").onchange = e => { set("aoe.auto", e.target.checked ? "1" : "0"); if (e.target.checked) autoSave(); else stopAuto(); };
+  $("#set-days").onchange = e => { set("aoe.autoDays", e.target.value); autoSave(); };
+  $("#set-wifi").onchange = e => { set("aoe.autoWifi", e.target.checked ? "1" : "0"); autoSave(); };
+  $("#set-max").onchange = e => { set("aoe.maxMB", e.target.value); };
+  $("#st-clear").onclick = () => dialog("Xoá mọi trận đã lưu trên điện thoại?\nLịch sử đấu vẫn hiện; muốn xem lại phải lấy " +
+    "file ghi từ máy tính.", { label: "Xoá", fn: async () => {
+      stopAuto();
+      if (APP.store) await APP.store.clearMatches();
+      await loadSaved(); renderList(); renderSettings();
+    } });
+  $("#st-clear-packs").onclick = () => dialog("Xoá gói hình và dữ liệu game?\nLần mở trận tới app sẽ tải lại từ máy tính " +
+    "(khoảng 24 MB).", { label: "Xoá", fn: async () => {
+      if (APP.store) await APP.store.clearPacks();
+      packPromise = null;
+      renderSettings();
+    } });
+  $("#app-check").onclick = async () => {
+    const m = $("#app-check-msg");
+    m.className = "msg"; m.textContent = "Đang kiểm tra…";
+    const r = await checkUpdate(true);
+    m.innerHTML = r === null ? "Không hỏi được trang phát hành (kiểm tra Internet)."
+      : r === false ? "Bạn đang dùng bản mới nhất."
+      : `Có bản mới ${esc(r.tag)}: <a href="${esc(r.url)}">tải về</a> rồi cài đè, trận đã lưu được giữ nguyên.`;
+  };
+}
+
+// ---- danh sách trận (toàn bộ lịch sử đấu) ------------------------------------------------------------------
+async function loadSaved() {
+  const saved = APP.store ? await APP.store.saved() : [];
+  APP.saved = new Map(saved.map(s => [s.file, s]));
+  return saved;
+}
+
+function setOnline(on) {
+  APP.online = on;
+  const pill = $("#pc-state");
+  const linked = APP.src && APP.src.linked;
+  pill.hidden = !linked;
+  pill.className = "pill " + (on ? "on" : on === false ? "off" : "");
+  pill.textContent = on ? "● Máy tính" : on === false ? "○ Ngoại tuyến" : "… Máy tính";
+  const note = $("#list-note");
+  if (on === false && linked) {
+    note.textContent = "Không kết nối được máy tính: chỉ hiện trận đã lưu trên điện thoại là mở được. Lịch sử đấu bên " +
+      "dưới là bản lấy lần gần nhất.";
+    note.hidden = false;
+  } else note.hidden = true;
+}
+
+// Lấy danh sách: hiện ngay bản nhớ lần trước (nếu có), rồi hỏi máy tính; không hỏi được thì giữ bản nhớ + trận đã lưu.
+async function loadList() {
+  const box = $("#matches");
+  const st = APP.store, src = APP.src;
+  const saved = await loadSaved();
+  const cached = st ? await st.getList() : null;
+  if (!APP.items.length && cached) { APP.items = cached; renderList(); }
+  else if (!APP.items.length) box.innerHTML = `<div class="msg">Đang tải danh sách…</div>`;
+  if (!src || !src.linked) {
+    setOnline(false);
+    APP.items = mergeSaved(cached || [], saved);
+    renderList();
+    return;
+  }
+  setOnline(null);
+  let items = null, err = null;
+  try { items = await src.list(); } catch (e) { err = e; }
+  if (src !== APP.src) return;                 // đã đổi / bỏ liên kết trong lúc chờ
+  if (items) {
+    APP.via = src.link.base ? "direct" : await Promise.resolve(src.via).catch(() => null);
+    if (st) st.putList(items);
+    APP.items = mergeSaved(items, saved);
+    setOnline(true);
+  } else {
+    APP.items = mergeSaved(cached || [], saved);
+    setOnline(false);
+    if (!APP.items.length) { box.innerHTML = `<div class="msg err">${esc(err.message)}</div>`; $("#list-count").textContent = ""; return; }
+  }
+  renderList();
+  // tự lưu bắt đầu sau 3 giây: người vừa mở app thường bấm xem ngay một trận, lúc đó không tranh đường truyền với nó
+  if (items) { clearTimeout(APP.autoTimer); APP.autoTimer = setTimeout(autoSave, 3000); }
+}
+
+// danh sách từ máy tính + các trận đã lưu mà máy tính không còn (đã xoá / dọn trên máy tính), mới nhất trước
+function mergeSaved(items, saved) {
+  const have = new Set(items.map(i => i.file));
+  const out = items.concat(saved.filter(s => !have.has(s.file)).map(s => ({ file: s.file, info: s.info })));
+  return out.sort((a, b) => ((b.info || {}).created || 0) - ((a.info || {}).created || 0));
+}
+
+function dayLabel(d) {
+  const t = new Date(), y = new Date(Date.now() - 864e5);
+  const same = (a, b) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  return same(d, t) ? "Hôm nay" : same(d, y) ? "Hôm qua"
+    : d.toLocaleDateString("vi-VN", { weekday: "long", day: "2-digit", month: "2-digit", year: "numeric" });
+}
+
+function renderList() {
+  const box = $("#matches");
+  const find = APP.find.trim().toLowerCase();
+  const all = APP.items;
+  const items = all.filter(it => {
+    const i = it.info || {};
+    if (APP.filter === "saved" && !APP.saved.has(it.file)) return false;
+    if (APP.filter === "win" && resultClass(i.result) !== "win") return false;
+    if (APP.filter === "lose" && resultClass(i.result) !== "lose") return false;
+    if (!find) return true;
+    const hay = [i.map, i.format, i.result, it.file].concat((i.players || []).map(p => p.name + " " + p.civ)).join(" ").toLowerCase();
+    return hay.includes(find);
+  });
+  const nSaved = all.filter(it => APP.saved.has(it.file)).length;
+  $("#list-count").textContent = all.length ? `${items.length === all.length ? all.length : items.length + " / " + all.length} trận · ${nSaved} đã lưu trên điện thoại` : "";
+  if (!all.length) {
+    const linked = APP.src && APP.src.linked;
+    box.innerHTML = `<div class="msg">${linked ? "Chưa có trận nào." : "Chưa liên kết máy tính.<br>Vào mục <b>Máy tính</b> ở thanh dưới để quét mã QR."}</div>`;
+    return;
+  }
+  if (!items.length) { box.innerHTML = `<div class="msg">Không có trận nào khớp bộ lọc.</div>`; return; }
   box.innerHTML = "";
+  let lastDay = null;
   for (const it of items) {
     const i = it.info || {};
     const d = new Date((i.created || 0) * 1000);
-    const date = d.toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit" }) + " " +
-      d.toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" });
+    const day = d.toDateString();
+    if (day !== lastDay) {
+      lastDay = day;
+      const h = document.createElement("div");
+      h.className = "day"; h.textContent = dayLabel(d);
+      box.appendChild(h);
+    }
+    const time = d.toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" });
     const teams = {};
     for (const p of i.players || []) (teams[p.team] = teams[p.team] || []).push(p);
     const tl = Object.keys(teams).sort().map(k => `<div class="team">${teams[k].map(p =>
       `<span class="${p.name === i.recorder ? "me" : ""}">${esc(p.name)}<em>${esc(p.civ)}</em></span>`).join("")}</div>`)
       .join(`<div class="vs">vs</div>`);
+    const saved = APP.saved.has(it.file);
     const el = document.createElement("button");
-    el.className = "match";
+    el.className = "match " + resultClass(i.result) + (!saved && APP.online === false ? " off" : "");
+    el.dataset.file = it.file;
     el.innerHTML = `<div class="row1"><b class="res ${resultClass(i.result)}">${esc(i.result)}</b>
-      <span>${esc(i.format)} · ${esc(i.map)}</span><span class="dur">${fmtClock(i.duration_ms || 0)}</span></div>
-      <div class="row2">${tl}</div><div class="row3">${date}${have.has(it.file) ? `<span class="saved">đã lưu</span>` : ""}</div>`;
-    el.onclick = () => {
-      if (!PAIRED) return openMatch(src, it.file, it.info);
-      // trong app / trang trên trạm: sang trang trận để nút Back quay về danh sách
-      sessionStorage.setItem("aoe.open", JSON.stringify(it));
-      location.href = "?m=" + encodeURIComponent(it.file);
-    };
+      <span class="mode">${esc(i.format)} · ${esc(i.map)}</span><span class="dur">${fmtClock(i.duration_ms || 0)}</span></div>
+      <div class="row2${Object.keys(teams).length > 2 ? " many" : ""}">${tl}</div><div class="row3"><span>${time}</span>${i.age3 != null ? `<span>Kích 3 ${fmtClock(i.age3)}</span>` : ""}
+      ${(i.hack || []).length ? `<span class="tag hack">có hack</span>` : ""}<span class="sp"></span>
+      ${saved ? `<span class="tag saved">đã lưu</span>` : `<span class="tag cloud">chưa lưu</span>`}</div>`;
+    el.onclick = () => openFromList(it);
     box.appendChild(el);
   }
+}
+
+// chạm một trận: đã lưu -> mở ngay; chưa lưu -> lấy file ghi từ máy tính nếu máy tính đang kết nối được, không thì báo
+function openFromList(it) {
+  if (!APP.saved.has(it.file) && APP.online !== true) {
+    const linked = APP.src && APP.src.linked;
+    dialog(linked ? "Trận này chưa lưu file ghi về điện thoại.\nCần bật máy tính (mở AoE-MapCap, vào mục Điện thoại, máy " +
+      "tính có Internet) để lấy file ghi trận." : "Trận này chưa lưu file ghi về điện thoại và điện thoại chưa liên kết máy " +
+      "tính.\nVào mục Máy tính để quét mã QR.", linked ? { label: "Thử kết nối lại", fn: () => loadList() }
+      : { label: "Mở mục Máy tính", fn: () => showTab("setup") });
+    return;
+  }
+  stopAuto();
+  if (!PAIRED) return openMatch(APP.src, it.file, it.info);
+  // trong app / trang trên trạm: sang trang trận để nút Back quay về danh sách
+  sessionStorage.setItem("aoe.open", JSON.stringify(it));
+  location.href = "?m=" + encodeURIComponent(it.file);
+}
+
+// ---- tự lưu trận mới (Cài đặt -> Tự lưu trận) --------------------------------------------------------------
+function autoNote(html, frac) {
+  const n = $("#auto-note");
+  if (!html) { n.hidden = true; return; }
+  n.innerHTML = `<span>${html}</span>` + (frac != null ? `<span class="bar"><i style="width:${Math.round(frac * 100)}%"></i></span>` : "");
+  n.hidden = false;
+}
+
+function stopAuto() {
+  clearTimeout(APP.autoTimer);
+  APP.autoStop = true;
+  if (APP.autoLive) APP.autoLive.cancel();
+}
+
+async function onWifi() {
+  if (APP.via === "lan" || APP.via === "direct") return true;      // đang đi thẳng trong mạng nhà
+  const c = navigator.connection;
+  return !(c && (c.type === "cellular" || c.type === "bluetooth" || c.type === "wimax"));
+}
+
+// Lần lượt lấy file ghi + dựng + lưu các trận mới trong SET.days() ngày gần nhất chưa có trên điện thoại (mới nhất
+// trước). Chạy khi vừa lấy được danh sách từ máy tính; dừng khi mở một trận, tắt cài đặt, đầy bộ nhớ, mất kết nối.
+async function autoSave() {
+  if (APP.autoRun || APP.online !== true || !SET.auto() || !APP.store || !LiveBuild.supported()) return;
+  const since = Date.now() / 1000 - SET.days() * 86400;
+  const todo = APP.items.filter(it => ((it.info || {}).created || 0) >= since && !APP.saved.has(it.file));
+  if (!todo.length) { autoNote(""); return; }
+  if (SET.wifi() && !(await onWifi())) {
+    autoNote(`Có <b>${todo.length} trận mới</b> chưa lưu: đang dùng mạng di động nên chưa tự lưu (đổi trong Cài đặt).`);
+    return;
+  }
+  APP.autoRun = true; APP.autoStop = false;
+  const src = APP.src;
+  let done = 0;
+  try {
+    autoNote(`Tự lưu ${todo.length} trận mới: đang chuẩn bị…`);
+    if (!packPromise) packPromise = src.sprites(t => autoNote("Tự lưu trận mới: " + esc(t))).then(b => ({ buf: b, pack: new SpritePack(b) }));
+    const { buf: packBuf } = await packPromise;
+    for (const it of todo) {
+      if (APP.autoStop || src !== APP.src) break;
+      const used = [...APP.saved.values()].reduce((a, e) => a + (e.size || SIZE_GUESS), 0);
+      if (used + SIZE_GUESS > SET.maxBytes()) {
+        autoNote(`Bộ nhớ trận đã lưu sắp đầy (${mb(used)} / ${mb(SET.maxBytes())}): tăng giới hạn trong Cài đặt để tự lưu thêm.`);
+        return;
+      }
+      const head = `Tự lưu trận mới <b>${done + 1}/${todo.length}</b>: `;
+      const live = await src.live(it.file, it.info, packBuf, t => autoNote(head + esc(t.replace("trên điện thoại", "").replace("…", "")) + "…"));
+      if (!live) { autoNote("Chưa tự lưu được: máy tính cần AoE-MapCap v38 trở lên."); return; }
+      APP.autoLive = live;
+      live.onProgress = p => autoNote(head + "đang dựng…", p.pos);
+      const final = await live.done;
+      APP.autoLive = null;
+      await APP.store.saveMatch(it.file, final, it.info);
+      done++;
+      await loadSaved();
+      if (!$("#list").hidden || true) renderList();
+    }
+    autoNote(done && !APP.autoStop ? `Đã tự lưu ${done} trận mới về điện thoại.` : "");
+    if (done) setTimeout(() => { if (!APP.autoRun) autoNote(""); }, 6000);
+  } catch (e) {
+    if (!APP.autoStop) autoNote("Tự lưu tạm dừng: " + esc(e.message));
+    else autoNote("");
+  } finally { APP.autoRun = false; APP.autoLive = null; }
 }
 
 async function openMatch(src, file, info, selftest) {
@@ -603,10 +905,25 @@ async function main() {
   const q = new URLSearchParams(location.search);
   const home = location.pathname;
   $("#back").onclick = () => { if (PAIRED && history.length > 1) history.back(); else location.href = home; };
-  if (!PAIRED) {
-    const src = new Source({ base: home.replace(/[^/]*$/, "") }, null);
-    if (q.get("m")) openMatch(src, q.get("m"), null, q.get("selftest"));
-    else { showList(src); appBanner({ lan: location.host + home.replace(/[^/]*$/, "").replace(/\/$/, "") }); }
+  // vỏ app: thanh menu dưới, bộ lọc danh sách, trang Máy tính, trang Cài đặt
+  $("#tabs").onclick = e => { const b = e.target.closest("button"); if (b) showTab(b.dataset.tab); };
+  $("#find").oninput = e => { APP.find = e.target.value; renderList(); };
+  $("#list-chips").onclick = e => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    APP.filter = b.dataset.f;
+    for (const x of $("#list-chips").children) x.classList.toggle("on", x === b);
+    renderList();
+  };
+  bindSetup();
+  bindSettings();
+  window.addEventListener("pagehide", () => { if (APP.autoLive) APP.autoLive.cancel(); });
+  if (!PAIRED) {                         // trang mở thẳng từ máy chủ của máy tính (phát triển / kiểm thử): không lưu trận
+    APP.src = new Source({ base: home.replace(/[^/]*$/, "") }, null);
+    if (q.get("m")) return openMatch(APP.src, q.get("m"), null, q.get("selftest"));
+    showTab("list");
+    loadList();
+    appBanner({ lan: location.host + home.replace(/[^/]*$/, "").replace(/\/$/, "") });
     return;
   }
   if (CLOUD && location.hash) {          // quét mã QR bằng camera: https://<trạm>/#r=<phòng>&l=<địa chỉ mạng nhà>
@@ -614,31 +931,33 @@ async function main() {
     if (link && link.room) saveLink(link);
     history.replaceState(null, "", location.pathname + location.search);   // mã phòng không nằm lại trên thanh địa chỉ
   }
-  const store = await Store.open();
+  const store = APP.store = await Store.open();
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
   const link = savedLink();
-  const src = new Source(link, store);
-  $("#pc-btn").hidden = false;
-  $("#pc-btn").onclick = () => showSetup(store);
+  const src = APP.src = new Source(link, store);
   if (q.get("m")) {
     let info = null;
     try {
       const it = JSON.parse(sessionStorage.getItem("aoe.open")) || {};
       if (it.file === q.get("m")) info = it.info || null;
     } catch { /* không có */ }
-    openMatch(src, q.get("m"), info, q.get("selftest"));
-  } else if (q.get("pair")) {            // mở từ trình duyệt: aoemapcap://pair?r=<phòng>&l=<địa chỉ> (v14: ?a=<địa chỉ>)
+    return openMatch(src, q.get("m"), info, q.get("selftest"));
+  }
+  if (q.get("pair")) {                   // mở từ trình duyệt: aoemapcap://pair?r=<phòng>&l=<địa chỉ> (v14: ?a=<địa chỉ>)
     const p = parsePair(q.get("pair"));
-    showSetup(store);
-    if (p) { if (p.lan) $("#pc-addr").value = p.lan; connect(p, store); }
-  } else if (!src.linked) showSetup(store);
-  else {
-    showList(src);
-    if (IN_APP) checkUpdate(); else appBanner(link);
+    history.replaceState(null, "", location.pathname);
+    showTab("setup");
+    if (p) { if (p.lan) $("#pc-addr").value = p.lan; if (!(await connect(p))) loadList(); }
+    else loadList();
+  } else {
+    const saved = store ? await store.saved() : [];
+    showTab(!src.linked && !saved.length ? "setup" : "list");      // mở app luôn về danh sách trận
+    loadList();
+    if (IN_APP) checkUpdate(); else if (src.linked) appBanner(link);
   }
   // Back từ trang trận có thể khôi phục nguyên trang cũ (bfcache): vẽ lại danh sách cho nhãn "đã lưu" mới
   window.addEventListener("pageshow", e => {
-    if (e.persisted && !q.get("m") && !$("#list").hidden) showList(src);
+    if (e.persisted && !q.get("m")) loadList();
   });
 }
 

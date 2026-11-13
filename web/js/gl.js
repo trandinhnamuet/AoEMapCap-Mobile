@@ -73,6 +73,20 @@ void main() {
   o = vec4(texelFetch(u_pal, ivec2(idx, 0), 0).rgb * b, 1.0);
 }`;
 
+// đường viền (mép bản đồ): tam giác màu đơn, toạ độ thế giới
+const VS_LINE = `#version 300 es
+in vec2 a_pos;
+uniform vec4 u_cam; uniform vec2 u_view;
+void main() {
+  vec2 c = (a_pos - u_cam.xy) * u_cam.z * 2.0 / u_view;
+  gl_Position = vec4(c.x, -c.y, 0.0, 1.0);
+}`;
+const FS_LINE = `#version 300 es
+precision mediump float;
+uniform vec4 u_color;
+out vec4 o;
+void main() { o = u_color; }`;
+
 function compile(gl, vs, fs) {
   const p = gl.createProgram();
   for (const [type, src] of [[gl.VERTEX_SHADER, vs], [gl.FRAGMENT_SHADER, fs]]) {
@@ -149,6 +163,18 @@ export class Renderer {
     gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
     gl.bindVertexArray(null);
     this.batches = { statics: this._batch(), units: this._batch() };
+    this.lineProg = compile(gl, VS_LINE, FS_LINE);
+    this.lineBuf = gl.createBuffer();
+    this.lineVao = gl.createVertexArray();
+    gl.bindVertexArray(this.lineVao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.lineBuf);
+    const lp = gl.getAttribLocation(this.lineProg.p, "a_pos");
+    gl.enableVertexAttribArray(lp);
+    gl.vertexAttribPointer(lp, 2, gl.FLOAT, false, 0, 0);
+    gl.bindVertexArray(null);
+    this.outline = null;           // 4 đỉnh hình thoi mép bản đồ (thế giới), như replay/world.py outline()
+    this.outlinePx = 1.5;          // bề dày viền (pixel khung vẽ)
+    this.outlineColor = [0.82, 0.82, 0.82, 0.8];
     this.tiles = [];
     const maxLayers = gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS);
     this.atlas = new Atlas(gl, 2048, Math.min(6, maxLayers));
@@ -274,6 +300,41 @@ export class Renderer {
       gl.bindVertexArray(b.vao);
       gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, b.count);
     }
+    gl.bindVertexArray(null);
+    this._drawOutline(cam);
+  }
+
+  // viền trắng mép bản đồ như trình xem máy tính: 4 cạnh hình thoi, mỗi cạnh một dải dày outlinePx pixel
+  setOutline(meta) {
+    const w = meta.map_w, h = meta.map_h, Y0 = meta.Y0;
+    this.outline = [[0, Y0], [w * 32, Y0 - w * 16], [(w + h) * 32, Y0 + (h - w) * 16], [h * 32, Y0 + h * 16]];
+  }
+
+  _drawOutline(cam) {
+    const pts = this.outline;
+    if (!pts) return;
+    const gl = this.gl, c = this.canvas, P = this.lineProg;
+    const t = this.outlinePx / cam.zoom / 2;
+    const v = new Float32Array(4 * 12);
+    for (let k = 0; k < 4; k++) {
+      const [x0, y0] = pts[k], [x1, y1] = pts[(k + 1) % 4];
+      const dx = x1 - x0, dy = y1 - y0, L = Math.hypot(dx, dy) || 1;
+      const nx = -dy / L * t, ny = dx / L * t, ex = dx / L * t, ey = dy / L * t;      // nới hai đầu cho các góc liền nhau
+      const a = [x0 - ex + nx, y0 - ey + ny], b = [x1 + ex + nx, y1 + ey + ny];
+      const d = [x0 - ex - nx, y0 - ey - ny], e = [x1 + ex - nx, y1 + ey - ny];
+      v.set([...a, ...b, ...e, ...a, ...e, ...d], k * 12);
+    }
+    gl.useProgram(P.p);
+    gl.uniform4f(P.u.u_cam, cam.x, cam.y, cam.zoom, 0);
+    gl.uniform2f(P.u.u_view, c.width, c.height);
+    const [r, g, bl, al] = this.outlineColor;
+    gl.uniform4f(P.u.u_color, r * al, g * al, bl * al, al);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    gl.bindVertexArray(this.lineVao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.lineBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, v, gl.DYNAMIC_DRAW);
+    gl.drawArrays(gl.TRIANGLES, 0, 24);
     gl.bindVertexArray(null);
   }
 }
