@@ -29,11 +29,16 @@
       <div class="filters">
         <input id="find" type="search" placeholder="Tìm tên người chơi, map…" autocomplete="off" autocapitalize="none"
                spellcheck="false">
-        <div class="chips" id="list-chips">
-          <button data-f="all" class="on">Tất cả</button>
-          <button data-f="saved">Đã lưu</button>
-          <button data-f="win">Thắng</button>
-          <button data-f="lose">Thua</button>
+        <div class="frow">
+          <div class="chips" id="list-chips">
+            <button data-f="all" class="on">Tất cả</button>
+            <button data-f="saved">Đã lưu</button>
+            <button data-f="win">Thắng</button>
+            <button data-f="lose">Thua</button>
+          </div>
+          <div class="viewsw" id="list-view" aria-label="Kiểu hiển thị">
+            <button data-v="cards" class="on">Thẻ</button><button data-v="table">Bảng</button>
+          </div>
         </div>
       </div>
       <div id="list-count" class="count"></div>

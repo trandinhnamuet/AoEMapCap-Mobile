@@ -5,7 +5,7 @@
 import { inflate } from "./format.js";
 import { PX_BLACK, PX_PAL, PX_PLAYER, PX_SHADOW, SLP } from "./sprites.js";
 
-export const AGE_VI = { 0: "Du mục", 1: "Đồ đá", 2: "Công cụ", 3: "Đồ đồng", 4: "Đồ sắt" };
+export const AGE_VI = { 0: "-", 1: "Đời 1", 2: "Đời 2", 3: "Đời 3", 4: "Đời 4" };       // như bảng chỉ số bản máy tính
 const TC_DAT = new Set([109, 71, 141, 142]);           // Town Center các đời
 // cột mẫu HUD người chơi (webhud.HudExport.frame)
 const P_AGE = 0, P_VILL = 1, P_POP = 2, P_ROOM = 3, P_ARMY = 4, P_KILLS = 5, P_DEATHS = 6, P_RAZE = 7, P_GOLDM = 8,
@@ -14,10 +14,13 @@ const P_AGE = 0, P_VILL = 1, P_POP = 2, P_ROOM = 3, P_ARMY = 4, P_KILLS = 5, P_D
 const RES_FRAME = { 0: 2, 1: 0, 2: 1, 3: 3 };           // loại tài nguyên (0 thực, 1 gỗ, 2 đá, 3 vàng) -> khung
 const RES_NAME = { 0: "thực", 1: "gỗ", 2: "đá", 3: "vàng" };
 const STAT_FRAME = { attack: 7, armor: 8, reload: 9, pierce: 10 };
-export const ECO_COLS = [["Thời đại", "age"], ["Dân", P_VILL], ["Dân số", "popcap"], ["res0", P_FOOD], ["res1", P_WOOD],
+export const ECO_COLS = [["Đời", "age"], ["Dân", P_VILL], ["Dân số", "popcap"], ["res0", P_FOOD], ["res1", P_WOOD],
   ["res3", P_GOLD], ["res2", P_STONE]];
-export const MIL_COLS = [["Quân", P_ARMY], ["Kill", P_KILLS], ["Chết", P_DEATHS], ["Phá nhà", P_RAZE],
-  ["Công nghệ", "ntech"], ["Vàng KT", P_GOLDM], ["Bơm", P_TRIB]];
+// cột 7 của mẫu người chơi: từ .aoeweb phiên bản 3 là số unit phù được (trước đó: số nhà phá); cột 6 "Chết" từ bản 3 đếm
+// mọi unit chết (cả tự xoá / thú giết)
+export const milCols = version => [["Quân", P_ARMY], ["Kill", P_KILLS], ["Chết", P_DEATHS],
+  [version >= 3 ? "Đã phù" : "Phá nhà", P_RAZE], ["C.nghệ", "ntech"], ["Đào vàng", P_GOLDM], ["Bơm", P_TRIB]];
+export const MIL_COLS = milCols(3);
 
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 export const fmtNum = v => (typeof v === "number" && !Number.isInteger(v))

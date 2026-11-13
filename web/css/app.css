@@ -271,3 +271,85 @@ select { padding: 9px 10px; font-size: 14px; max-width: 58%; }
   .v-panels { left: auto; width: min(460px, 55%); right: 84px; }
 }
 #viewer canvas.v-mini { inset: auto; left: 8px; top: calc(env(safe-area-inset-top) + 60px); }   /* không theo "#viewer canvas" (khung vẽ chính) */
+
+/* ---- bố cục trình xem v10 (người dùng 13/11): nút điều khiển cạnh trái, minimap góc phải trên, thẻ unit nhỏ gọn góc
+   phải dưới, bảng chỉ số gọn ở giữa cạnh dưới (đủ mọi người chơi, không cuộn dọc), thanh thời gian thấp hơn -------- */
+.v-tools { left: 8px; right: auto; top: calc(env(safe-area-inset-top) + 52px); gap: 5px; }
+.v-tools button { min-width: 58px; padding: 6px 6px; font-size: 11.5px; border-radius: 8px; }
+.v-mini, #viewer canvas.v-mini { left: auto; right: 8px; top: calc(env(safe-area-inset-top) + 52px); }
+.v-toast { top: calc(env(safe-area-inset-top) + 52px); max-width: 52%; }
+/* thanh thời gian thấp */
+.v-bottom { padding: 2px 8px calc(env(safe-area-inset-bottom) + 5px); gap: 5px; row-gap: 0; }
+.v-bottom button { min-width: 38px; height: 30px; padding: 0 7px; border-radius: 15px; font-size: 12px; }
+.v-bottom .v-play { min-width: 44px; }
+.v-bottom .v-speed { min-width: 44px; }
+.v-track { height: 20px; }
+.v-seek { height: 20px; }
+.v-ages { top: 0; height: 5px; }
+.v-ages i { height: 6px; }
+.v-top { padding-top: calc(env(safe-area-inset-top) + 5px); padding-bottom: 4px; }
+#back { width: 32px; height: 32px; font-size: 24px; line-height: 28px; }
+.v-persp button { padding: 4px 9px; font-size: 12px; }
+/* các bảng: một hàng sát trên thanh thời gian - công nghệ trái, bảng chỉ số giữa, thẻ unit phải; hẹp thì xếp chồng lên */
+.v-panels, .v-panels:not(#x) { left: 8px; right: 8px; top: auto; width: auto; bottom: calc(env(safe-area-inset-bottom) + 62px);
+  flex-direction: row; flex-wrap: wrap-reverse; align-items: flex-end; justify-content: center; gap: 6px; }
+.v-panel { border-radius: 9px; padding: 6px 8px; font-size: 12px; max-height: 44vh; }
+.v-panel .ph { margin-bottom: 4px; gap: 6px; }
+.v-panel .ph .x { width: 26px; height: 24px; border-radius: 6px; }
+.v-techs { order: 1; flex: 0 1 300px; margin-right: auto; }
+.v-score { order: 2; flex: 0 1 auto; max-width: 100%; margin: 0 auto; max-height: none; overflow: visible; padding: 5px 7px; }
+.v-score .ph b { font-size: 12px; }
+.v-score .tabs button { padding: 2px 8px; font-size: 11px; }
+.v-score table { width: auto; font-size: 11.5px; }
+.v-score th { font-size: 10.5px; padding: 1px 4px; }
+.v-score td { padding: 2px 4px; }
+.v-score td.nm { max-width: 118px; }
+.v-score tr.team td { padding-top: 3px; font-size: 10.5px; }
+.v-score .ri { height: 13px; }
+.v-info { order: 3; flex: 0 0 auto; width: 208px; margin-left: auto; font-size: 11.5px; padding: 6px 7px; max-height: 40vh; }
+.v-info .ph b { font-size: 12.5px; }
+.v-info .ph .nm span { font-size: 11px; }
+.v-panel .ic { width: 30px; height: 30px; }
+.v-info .hp .pbar { height: 7px; }
+.v-info .hp span { font-size: 11px; }
+.v-info .stats { gap: 2px 9px; margin-top: 4px; }
+.v-panel .si { height: 13px; }
+.v-info .cmd { grid-template-columns: repeat(auto-fill, 34px); gap: 4px; }
+.v-info .cmd button { width: 34px; height: 34px; padding: 2px; }
+.v-info .cmd .ic { width: 28px; height: 28px; }
+.v-panel .sub { margin: 5px 0 3px; font-size: 11px; }
+.v-panel .muted { font-size: 11px; margin-top: 4px; }
+@media (max-width: 560px) {
+  .v-panels, .v-panels:not(#x) { right: 8px; }
+  .v-score { width: 100%; }
+  .v-score table { width: 100%; }
+  .v-score td, .v-score th { padding: 2px 2px; font-size: 10.5px; }
+  .v-score th { font-size: 9.5px; }
+  .v-score td.nm { max-width: 78px; }
+  .v-info { width: 190px; }
+}
+@media (orientation: landscape) {
+  .v-panels, .v-panels:not(#x) { left: 76px; right: 8px; width: auto; }
+}
+
+/* ---- danh sách trận dạng bảng (như trang Trận đã ghi của bản máy tính) + nút đổi kiểu Thẻ / Bảng ------------------ */
+.frow { display: flex; align-items: center; gap: 8px; }
+.frow .chips { flex: 1; min-width: 0; }
+.viewsw { flex: none; display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.viewsw button { padding: 6px 11px; font-size: 13px; font-weight: 600; color: var(--muted); background: var(--bg2); }
+.viewsw button.on { color: var(--gold); background: var(--red-sel); }
+.tag.push { color: var(--gold); border: 1px solid rgba(226, 184, 120, .5); }
+#matches.astable { display: block; }
+.tblwrap { overflow-x: auto; border: 1px solid var(--line2); border-radius: 10px; background: var(--panel); -webkit-overflow-scrolling: touch; }
+.mt { border-collapse: collapse; width: 100%; font-size: 13px; white-space: nowrap; }
+.mt th { position: sticky; top: 0; background: var(--panel2); color: var(--muted); font-size: 11.5px; font-weight: 700;
+  text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--line); }
+.mt td { padding: 9px 10px; border-bottom: 1px solid var(--line2); }
+.mt tr.match { display: table-row; border: 0; border-radius: 0; background: none; }
+.mt tbody tr:nth-child(even) td { background: var(--bg2); }
+.mt tr.match:active td { background: var(--red-sel); }
+.mt tr.off td { opacity: .6; }
+.mt td.me { color: var(--gold); font-weight: 700; }
+.mt td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.mt td.res { font-weight: 700; }
+.mt td.res.win { color: var(--win); } .mt td.res.lose { color: var(--lose); }

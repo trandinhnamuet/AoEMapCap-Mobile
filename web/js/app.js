@@ -30,7 +30,7 @@ const SET = {
   maxBytes: () => +(localStorage.getItem("aoe.maxMB") || 500) * 1e6,      // tổng dung lượng trận đã lưu; trận vừa mở luôn giữ
 };
 const SIZE_GUESS = 20e6;        // trận lưu từ bản trước chưa ghi cỡ
-const WEB_VERSION = 2;          // .aoeweb có bảng thông số (mapcap/webexport.py); trận lưu bản cũ thì lấy lại khi được
+const WEB_VERSION = 3;          // .aoeweb bản 3: số Chết / Đã phù đếm từ unit; trận lưu bản cũ thì dựng lại khi lấy được file ghi
 const GAMEDATA_KEY = "/s/gamedata1";   // gói dữ liệu game phiên bản 1 (mapcap/webexport.py GAMEDATA_VERSION)
 const REPO = "trandinhnamuet/AoEMapCap-Mobile";
 const APP_PKG = "io.github.trandinhnamuet.aoemapcap";
@@ -42,6 +42,31 @@ const PC_BACK_MS = 10000;       // máy tính vừa rớt khỏi trạm (mạng 
 const HEAD_MS = 90000;          // yêu cầu qua trạm không có khung nào: coi như mất (máy tính rớt giữa chừng), hỏi lại
 const RETRY_MS = 120000;        // chờ máy tính chuẩn bị / tải trận: lỗi kết nối liên tiếp quá lâu mới báo lỗi
 const fatal = e => { e.fatal = true; return e; };     // lỗi không thử lại (máy tính trả lỗi rõ ràng)
+// Danh tính thiết bị: mã ngẫu nhiên tạo một lần + tên máy. Gửi kèm khi hỏi danh sách / lấy file ghi để trang Điện thoại
+// của AoE-MapCap trên máy tính hiện máy nào đã liên kết, đã lưu trận nào (máy tính bản cũ bỏ qua các tham số này).
+function deviceId() {
+  let d = localStorage.getItem("aoe.dev");
+  if (!d) {
+    d = Array.from(crypto.getRandomValues(new Uint8Array(9)), b => "abcdefghjkmnpqrstuvwxyz23456789"[b % 31]).join("");
+    localStorage.setItem("aoe.dev", d);
+  }
+  return d;
+}
+function deviceName() {
+  const app = window.AoEApp;
+  let n = "";
+  try { n = app && app.deviceName ? String(app.deviceName() || "") : ""; } catch { /* app bản cũ */ }
+  if (!n) {
+    const m = /Android [\d.]+; ([^;)]+)/.exec(navigator.userAgent);
+    n = m ? m[1].trim() : "Trình duyệt";
+  }
+  return n.slice(0, 40);
+}
+function who() {
+  const app = window.AoEApp;
+  const ver = app && app.versionCode ? app.versionCode() : 0;
+  return "cid=" + deviceId() + "&dev=" + encodeURIComponent(deviceName()) + "&app=" + ver;
+}
 const sleep = ms => new Promise(res => setTimeout(res, ms));
 // tiến độ tải: % khi biết tổng dung lượng, không thì số MB đã nhận (WebView có lúc không đưa Content-Length)
 const pct = (f, got) => f === null || f === undefined ? (got / 1e6).toFixed(1).replace(".", ",") + " MB" : Math.round(f * 100) + "%";
@@ -266,7 +291,7 @@ class Source {
     return this.relay.fetch(path);
   }
   async list() {
-    const r = await this.fetch("api/matches");
+    const r = await this.fetch("api/matches?" + who());
     if (!r.ok) throw new Error("máy tính trả lỗi " + r.status);
     return r.json();
   }
@@ -323,6 +348,25 @@ class Source {
     return this._retry(() => this._download(url, (f, got) => onStatus && onStatus("Đang tải trận… " + pct(f, got))),
       onStatus, retry);
   }
+  // báo cho máy tính các trận đang lưu trên điện thoại này (reset = đây là toàn bộ danh sách); lỗi / máy tính bản cũ: bỏ qua
+  async reportSaved(files, reset) {
+    if (!this.linked) return;
+    const chunks = [];
+    let cur = [];
+    for (const f of files) {
+      if (cur.join("|").length + f.length > 1200) { chunks.push(cur); cur = []; }
+      cur.push(f);
+    }
+    if (cur.length || reset) chunks.push(cur);
+    try {
+      for (let k = 0; k < chunks.length; k++) {
+        const r = await this.fetch("api/saved?cid=" + deviceId() + (reset && k === 0 ? "&reset=1" : "") +
+          "&f=" + encodeURIComponent(chunks[k].join("|")));
+        if (!r.ok) return;
+        await r.arrayBuffer();
+      }
+    } catch { /* không báo được cũng không sao */ }
+  }
   // bản đã lưu trên điện thoại (đủ phiên bản), null nếu chưa có
   async cached(file) {
     if (!this.store) return null;
@@ -355,7 +399,7 @@ class Source {
     let rec;
     onStatus && onStatus("Đang lấy file ghi trận từ máy tính…");
     try {
-      rec = await this._retry(() => this._download("api/rec?f=" + encodeURIComponent(file),
+      rec = await this._retry(() => this._download("api/rec?f=" + encodeURIComponent(file) + "&cid=" + deviceId(),
         (f, got) => onStatus && onStatus("Đang lấy file ghi trận từ máy tính… " + pct(f, got))), onStatus);
     } catch (e) { if (e.status === 404) return null; throw e; }
     mark("rec");
@@ -396,7 +440,7 @@ let packPromise = null;
 // trạng thái vỏ app: nguồn trận, bộ nhớ, danh sách (từ máy tính hoặc bản nhớ lần trước), trận đã lưu, máy tính có đang
 // kết nối được không (null = chưa biết), bộ lọc danh sách, lượt tự lưu đang chạy
 const APP = { src: null, store: null, items: [], saved: new Map(), online: null, filter: "all", find: "", autoRun: false,
-  autoLive: null, via: null };
+  autoLive: null, via: null, view: localStorage.getItem("aoe.view") === "table" ? "table" : "cards" };
 const TABS = {
   list: ["Trận đã ghi", "Toàn bộ lịch sử đấu trên máy tính của bạn"],
   setup: ["Máy tính", "Liên kết với AoE-MapCap trên máy tính"],
@@ -678,6 +722,7 @@ async function loadList() {
     if (st) st.putList(items);
     APP.items = mergeSaved(items, saved);
     setOnline(true);
+    if (st) src.reportSaved(saved.filter(s => webVersionOk(s)).map(s => s.file), true);
   } else {
     APP.items = mergeSaved(cached || [], saved);
     setOnline(false);
@@ -694,6 +739,8 @@ function mergeSaved(items, saved) {
   const out = items.concat(saved.filter(s => !have.has(s.file)).map(s => ({ file: s.file, info: s.info })));
   return out.sort((a, b) => ((b.info || {}).created || 0) - ((a.info || {}).created || 0));
 }
+
+const webVersionOk = () => true;       // (mọi bản lưu đều mở được; bản cũ sẽ dựng lại khi lấy được file ghi)
 
 function dayLabel(d) {
   const t = new Date(), y = new Date(Date.now() - 864e5);
@@ -724,6 +771,8 @@ function renderList() {
   }
   if (!items.length) { box.innerHTML = `<div class="msg">Không có trận nào khớp bộ lọc.</div>`; return; }
   box.innerHTML = "";
+  box.classList.toggle("astable", APP.view === "table");
+  if (APP.view === "table") return renderTable(box, items);
   let lastDay = null;
   for (const it of items) {
     const i = it.info || {};
@@ -749,10 +798,36 @@ function renderList() {
       <span class="mode">${esc(i.format)} · ${esc(i.map)}</span><span class="dur">${fmtClock(i.duration_ms || 0)}</span></div>
       <div class="row2${Object.keys(teams).length > 2 ? " many" : ""}">${tl}</div><div class="row3"><span>${time}</span>${i.age3 != null ? `<span>Kích 3 ${fmtClock(i.age3)}</span>` : ""}
       ${(i.hack || []).length ? `<span class="tag hack">có hack</span>` : ""}<span class="sp"></span>
-      ${saved ? `<span class="tag saved">đã lưu</span>` : `<span class="tag cloud">chưa lưu</span>`}</div>`;
+      ${saved ? `<span class="tag saved">đã lưu</span>` : it.push ? `<span class="tag push">chờ lưu</span>` : `<span class="tag cloud">chưa lưu</span>`}</div>`;
     el.onclick = () => openFromList(it);
     box.appendChild(el);
   }
+}
+
+// Dạng bảng như trang Trận đã ghi của AoE-MapCap trên máy tính: Ngày, Người chơi, Quân, Kết quả, Thể thức, Map, Kích 3,
+// Thời gian (+ cột Lưu). Kéo ngang để xem hết cột; chạm một dòng để mở trận.
+function renderTable(box, items) {
+  const rows = items.map(it => {
+    const i = it.info || {};
+    const d = new Date((i.created || 0) * 1000);
+    const date = d.toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit", year: "numeric" }) + " " +
+      d.toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" });
+    const saved = APP.saved.has(it.file);
+    const rc = resultClass(i.result);
+    return `<tr class="match ${rc}${!saved && APP.online === false ? " off" : ""}" data-file="${esc(it.file)}">
+      <td>${date}</td><td class="me">${esc(i.recorder)}</td><td>${esc(i.recorder_civ)}</td>
+      <td class="res ${rc}">${(i.hack || []).length ? "⚠ " : ""}${esc(i.result)}</td>
+      <td>${esc(i.format)} ${esc(i.civ_mode || "")}</td><td>${esc(i.map)}</td>
+      <td class="num">${i.age3 != null ? fmtClock(i.age3) : "—"}</td><td class="num">${fmtClock(i.duration_ms || 0)}</td>
+      <td>${saved ? `<span class="tag saved">đã lưu</span>` : it.push ? `<span class="tag push">chờ lưu</span>` : `<span class="tag cloud">chưa lưu</span>`}</td></tr>`;
+  }).join("");
+  box.innerHTML = `<div class="tblwrap"><table class="mt"><thead><tr><th>Ngày</th><th>Người chơi</th><th>Quân</th><th>Kết quả</th>
+    <th>Thể thức</th><th>Map</th><th>Kích 3</th><th>Thời gian</th><th>Lưu</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  const by = new Map(items.map(it => [it.file, it]));
+  box.querySelector("tbody").onclick = e => {
+    const tr = e.target.closest("tr[data-file]");
+    if (tr && by.has(tr.dataset.file)) openFromList(by.get(tr.dataset.file));
+  };
 }
 
 // chạm một trận: đã lưu -> mở ngay; chưa lưu -> lấy file ghi từ máy tính nếu máy tính đang kết nối được, không thì báo
@@ -797,7 +872,7 @@ async function onWifi() {
 async function autoSave() {
   if (APP.autoRun || APP.online !== true || !SET.auto() || !APP.store || !LiveBuild.supported()) return;
   const since = Date.now() / 1000 - SET.days() * 86400;
-  const todo = APP.items.filter(it => ((it.info || {}).created || 0) >= since && !APP.saved.has(it.file));
+  const todo = APP.items.filter(it => (((it.info || {}).created || 0) >= since || it.push) && !APP.saved.has(it.file));
   if (!todo.length) { autoNote(""); return; }
   if (SET.wifi() && !(await onWifi())) {
     autoNote(`Có <b>${todo.length} trận mới</b> chưa lưu: đang dùng mạng di động nên chưa tự lưu (đổi trong Cài đặt).`);
@@ -825,6 +900,7 @@ async function autoSave() {
       const final = await live.done;
       APP.autoLive = null;
       await APP.store.saveMatch(it.file, final, it.info);
+      src.reportSaved([it.file]);
       done++;
       await loadSaved();
       if (!$("#list").hidden || true) renderList();
@@ -866,7 +942,8 @@ async function openMatch(src, file, info, selftest) {
     }
     say("Đang dựng bản đồ…");
     const v = new Viewer($("#viewer"), buf, pack,
-      { onError: e => say("Lỗi: " + e.message), build: live ? live.firstState : null });
+      { onError: e => say("Lỗi: " + e.message), build: live ? live.firstState : null,
+        autoplay: !selftest && !new URLSearchParams(location.search).get("noplay") });
     await v.init();
     mark("viewer");
     status.hidden = true;
@@ -877,7 +954,7 @@ async function openMatch(src, file, info, selftest) {
       live.onSnapshot = (b, st) => v.swap(b, st);
       live.done.then(async final => {
         mark("built");
-        if (src.store) await src.store.saveMatch(file, final, info);
+        if (src.store) { await src.store.saveMatch(file, final, info); src.reportSaved([file]); }
         mark("saved");
         document.body.dataset.built = "1";
       }).catch(e => { console.error(e); v.toast("Dựng trận dở dang: " + e.message, 6000); });
@@ -908,6 +985,14 @@ async function main() {
   // vỏ app: thanh menu dưới, bộ lọc danh sách, trang Máy tính, trang Cài đặt
   $("#tabs").onclick = e => { const b = e.target.closest("button"); if (b) showTab(b.dataset.tab); };
   $("#find").oninput = e => { APP.find = e.target.value; renderList(); };
+  const setView = v => {
+    APP.view = v;
+    localStorage.setItem("aoe.view", v);
+    for (const x of $("#list-view").children) x.classList.toggle("on", x.dataset.v === v);
+    renderList();
+  };
+  $("#list-view").onclick = e => { const b = e.target.closest("button"); if (b) setView(b.dataset.v); };
+  for (const x of $("#list-view").children) x.classList.toggle("on", x.dataset.v === APP.view);
   $("#list-chips").onclick = e => {
     const b = e.target.closest("button");
     if (!b) return;

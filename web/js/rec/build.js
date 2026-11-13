@@ -9,7 +9,7 @@ import { unxz } from "./xz.js";
 import { loads, typedOf } from "./pickle.js";
 import { ELEV_H, RGB, TILE_H, TILE_W, buildIndex, buildTerrain, decodeRGBA, pyRoundInt } from "./terrain.js";
 
-export const WEB_VERSION = 2;
+export const WEB_VERSION = 3;        // 3: cột người chơi 6 = unit đã chết (mọi nguyên nhân), 7 = unit phù được (trước: phá nhà)
 export const CHUNK = 250;
 const FOG_DIM = 0.43;
 const TERRAIN_BUDGET = 12e6;
@@ -191,6 +191,9 @@ class FrameState {
     this.go = 0; this.prs = new Map(); this.pav = new Map(); this.ptr = new Map();
     this.frame = -1; this.t = 0; this.at = 0;
     this.delta = false;                    // mẫu vừa áp là XOR: chIdx[0..nChanged) = các ô đổi
+    // đếm từ dữ liệu unit như replay/data.FrameState._count_losses: lost = unit (loại 70) của người chơi chuyển sang
+    // chết (status >= 3 hoặc máu <= 0, mọi nguyên nhân); conv = unit đang sống đổi chủ sang người chơi này (phù được)
+    this.lost = new Map(); this.conv = new Map();
   }
   _reset(units) {
     const n = units.n;
@@ -237,6 +240,8 @@ class FrameState {
         const i = this.pos.get(uid);
         if (i !== undefined) { this.pos.delete(uid); this.valid[i] = 0; this.free.push(i); }
       }
+      // như Python: xác định hàng của mọi unit trước, so bản CŨ (chưa ghi đè) với bản mới để đếm, rồi mới ghi
+      const at = new Int32Array(ch.n), oldK = [];
       for (let k = 0; k < ch.n; k++) {
         const uid = ch.uid[k];
         let i = this.pos.get(uid);
@@ -245,9 +250,20 @@ class FrameState {
           i = this.free.pop();
           this.pos.set(uid, i);
           this.valid[i] = 1;
-        }
-        ucopyRow(this.arr, i, ch, k);
+        } else oldK.push(k);
+        at[k] = i;
       }
+      const A = this.arr;
+      for (const k of oldK) {
+        const i = at[k];
+        if (A.kind[i] !== 70 || A.owner[i] <= 0) continue;
+        const deadO = A.status[i] >= 3 || A.hp[i] <= 0;
+        const deadU = ch.status[k] >= 3 || ch.hp[k] <= 0;
+        if (deadU && !deadO) this.lost.set(A.owner[i], (this.lost.get(A.owner[i]) || 0) + 1);
+        if (ch.owner[k] !== A.owner[i] && ch.owner[k] > 0 && !deadO && !deadU)
+          this.conv.set(ch.owner[k], (this.conv.get(ch.owner[k]) || 0) + 1);
+      }
+      for (let k = 0; k < ch.n; k++) ucopyRow(A, at[k], ch, k);
     }
     const t = p.get("t");
     const ps = p.get("pstate");
@@ -807,11 +823,11 @@ class Hud {
       const a = i => i < attrs.length ? num(attrs[i]) : null;
       const pstat = st.pstat.get(idx);
       const ptype = pstat ? pstat[0] : 0, resigned = pstat ? pstat[1] : 0;
-      const kills = a(A.KILLS), ratio = a(A.KILL_RATIO);
+      const kills = a(A.KILLS);
       const stt = ptype === 2 && resigned ? 3 : (ptype === 1 ? 1 : ptype === 2 ? 2 : 0);
       const tribute = a(A.TRIBUTE_GIVEN);
       P[idx] = [a(A.AGE), vill.get(idx) || 0, a(A.POP), a(A.POP_ROOM), a(40), kills,
-        kills !== null && ratio !== null ? kills - ratio : null, a(A.RAZINGS), a(A.GOLD_COLLECTED),
+        st.lost.get(idx) || 0, st.conv.get(idx) || 0, a(A.GOLD_COLLECTED),
         tribute !== null ? Math.max(tribute, 0) : null, a(A.FOOD), a(A.WOOD), a(A.GOLD), a(A.STONE), stt];
       const res = [];
       const prs = st.prs.get(idx);

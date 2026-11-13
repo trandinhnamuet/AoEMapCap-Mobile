@@ -118,6 +118,13 @@ public class MainActivity extends Activity {
             runOnUiThread(MainActivity.this::scanQr);
         }
 
+        /** Tên máy (hãng + dòng máy) để trang Điện thoại của AoE-MapCap trên máy tính hiện máy nào đã liên kết. */
+        @JavascriptInterface
+        public String deviceName() {
+            String m = Build.MANUFACTURER == null ? "" : Build.MANUFACTURER, d = Build.MODEL == null ? "" : Build.MODEL;
+            return d.toLowerCase().startsWith(m.toLowerCase()) ? d : (m + " " + d).trim();
+        }
+
         @JavascriptInterface
         public int versionCode() {
             try {

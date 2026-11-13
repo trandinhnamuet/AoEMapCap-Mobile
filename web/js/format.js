@@ -3,6 +3,7 @@
 
 export const F_DOP = 1, F_BLD = 2, F_FOGVIS = 4, F_HIDE = 8, F_DOPOK = 16;
 const MAGIC = "AOEWEB01";
+const MAX_VERSION = 3;          // phiên bản .aoeweb cao nhất trình xem này đọc được (WEB_VERSION của bộ dựng)
 
 export async function inflate(u8) {
   const s = new Blob([u8]).stream().pipeThrough(new DecompressionStream("deflate"));
@@ -39,7 +40,8 @@ export class Match {
     if (magic !== MAGIC) throw new Error("không phải file .aoeweb");
     const n = new DataView(buf).getUint32(8, true);
     const meta = JSON.parse(new TextDecoder().decode(u8.subarray(12, 12 + n)));
-    if (meta.version > 2) throw new Error("file của bản mới hơn, hãy cập nhật app");   // 2: có dữ liệu HUD (hud.js)
+    // 2: có dữ liệu HUD (hud.js); 3: cột người chơi 6 / 7 = unit chết / unit phù được (đọc được cả bản 1-2)
+    if (meta.version > MAX_VERSION) throw new Error("file của bản mới hơn, hãy cập nhật app");
     const m = new Match(u8, 12 + n, meta);
     await m._init();
     return m;

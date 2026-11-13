@@ -3,11 +3,12 @@
 // Logic chọn unit theo tầm nhìn giống replay/viewer.py (_rebuild).
 import { F_BLD, F_DOP, F_DOPOK, F_FOGVIS, F_HIDE, Match, State } from "./format.js";
 import { Renderer } from "./gl.js";
-import { AGE_VI, ECO_COLS, HudData, Icons, MIL_COLS, P_AGE, TC_DAT, esc, fmtMs, scoreCell, statusOf, unitInfo } from "./hud.js";
+import { AGE_VI, ECO_COLS, HudData, Icons, P_AGE, TC_DAT, esc, fmtMs, milCols, scoreCell, statusOf, unitInfo } from "./hud.js";
 
 const SPEEDS = [0.25, 0.5, 1, 2, 4, 8, 16];
 const JUMP_MS = 15000;             // lùi / tới 15 giây giờ game
 const HUD_MS = 200;                // làm mới bảng HUD tối đa 5 lần mỗi giây khi đang phát
+const FLY_MS = 900;                // máy quay tự động lướt sang mục tiêu mới trong bấy nhiêu ms
 const DECODE_BUDGET_MS = 8;        // giải mã sprite mới tối đa mỗi khung hình; còn lại để khung sau
 
 export function fmtClock(ms) {
@@ -68,6 +69,10 @@ export class Viewer {
     new ResizeObserver(() => { this._resize(); this.needDraw = true; }).observe(this.canvas);
     this.needDraw = true;
     this._last = performance.now();
+    if (this.opts.autoplay !== false) {          // mở trận là chạy luôn, máy quay tự động bật sẵn (người dùng 13/11)
+      this.playing = true;
+      this.setAutoCam(true, true);
+    }
     requestAnimationFrame(t => this._loop(t));
   }
 
@@ -146,10 +151,20 @@ export class Viewer {
     return [t.vm >>> 0, t.em >>> 0];
   }
 
+  _allMask() {
+    let vm = 0;
+    for (const t of this.m.meta.teams) vm |= t.vm;
+    return vm >>> 0;
+  }
+
   _buildFog() {
     const V = this.state.vis, fog = this.fog;
-    if (this.persp === null) { fog.fill(255); }
-    else {
+    if (this.persp === null) {
+      // toàn bản đồ như bản máy tính: thấy hết unit, sáng chỗ có tầm nhìn của BẤT KỲ người chơi nào, tối chỗ không ai thấy
+      const vm = this._allMask(), dim = this.fogDim;
+      if (!vm) fog.fill(255);
+      else for (let i = 0; i < V.length; i++) fog[i] = (V[i] & vm) ? 255 : dim;
+    } else {
       const [vm, em] = this._teamMasks();
       const rev = this.m.meta.reveal;
       const dim = this.fogDim;
@@ -259,14 +274,21 @@ export class Viewer {
       }
     }
     const bright = [];
+    const allVm = this.persp === null ? this._allMask() : 0;
     for (let i = 0; i < st.cap; i++) {
       if (!st.valid[i]) continue;
       const f = st.flags[i];
       if (f & F_HIDE) continue;
       const k25 = (f & F_DOP) !== 0;
       let b = 1;
-      if (this.persp === null) { if (k25) continue; }
-      else {
+      if (this.persp === null) {
+        if (k25) continue;
+        if (allVm) {
+          const tx = Math.min(mw - 1, Math.max(0, Math.floor(st.x[i])));
+          const ty = Math.min(mh - 1, Math.max(0, Math.floor(st.y[i])));
+          b = (V[ty * mw + tx] & allVm) ? 1 : M.fog_dim;
+        }
+      } else {
         const tx = Math.min(mw - 1, Math.max(0, Math.floor(st.x[i])));
         const ty = Math.min(mh - 1, Math.max(0, Math.floor(st.y[i])));
         const t = ty * mw + tx;
@@ -399,7 +421,7 @@ export class Viewer {
                 build: q(".v-build") };
     const u = this.ui;
     u.tools = add("v-tools", "div", [["score", "Bảng"], ["techs", "Công nghệ"], ["mini", "Bản đồ"],
-      ["auto", "Tự động"], ["follow", "Khoá"], ["fit", "Toàn cảnh"], ["hide", "Ẩn"], ["help", "?"]]
+      ["auto", "Tự động"], ["follow", "Khoá"], ["hide", "Ẩn"], ["help", "?"]]
       .map(([a, t]) => `<button data-a="${a}">${t}</button>`).join(""));
     u.panels = add("v-panels");
     u.techs = document.createElement("div"); u.techs.className = "v-panel v-techs"; u.panels.appendChild(u.techs);
@@ -461,7 +483,8 @@ export class Viewer {
     this._buildMinimap();
     if (!this.hud.ok) this.toast("Trận này chưa có bảng thông số: cập nhật AoE-MapCap trên máy tính (v17 trở lên), " +
       "rồi mở lại trận khi điện thoại kết nối được máy tính.", 6000);
-    else this.toast("Chạm \"?\" để xem cách dùng", 3000);
+    else this.toast(this.opts.autoplay !== false ? "Máy quay tự động đang bật · chạm \"?\" để xem cách dùng"
+      : "Chạm \"?\" để xem cách dùng", 3500);
     this._updateUi();
   }
 
@@ -488,9 +511,9 @@ export class Viewer {
       ["Bảng", "bảng tỉ số: Kinh tế / Quân sự; chạm tên người chơi để chọn và bay tới nhà chính"],
       ["Công nghệ", "công nghệ đã xong (giờ xong) + đang nghiên cứu bao nhiêu % của người chơi đang chọn"],
       ["Bản đồ", "minimap: chạm / kéo để đưa máy quay tới"],
-      ["Tự động", "máy quay tự tới nơi đang giao tranh; không có giao tranh thì xem nhà đang xây, dân đang làm việc. Tự kéo máy quay thì tắt"],
+      ["Tự động", "bật sẵn khi mở trận: máy quay tự lướt tới nơi đang giao tranh; không có giao tranh thì xem nhà đang xây, dân đang làm việc. Tự kéo máy quay / chạm unit thì tắt, chạm nút để bật lại"],
       ["Bảng → chạm đội / người chơi", "xem tầm nhìn của đội đó (chạm người chơi: tới nhà chính của họ)"],
-      ["Toàn map / Đội", "tầm nhìn cả bản đồ hoặc của từng đội (sương mù)"],
+      ["Toàn map / Đội", "tầm nhìn của từng đội, hoặc toàn bản đồ: thấy hết unit, chỗ không người chơi nào nhìn thấy thì tối"],
       ["−15s / +15s", "lùi / tới 15 giây; − / + đổi tốc độ 0,25x … 16x, chạm số tốc độ: về 1x"],
       ["Ẩn", "ẩn toàn bộ HUD để xem trận"],
       ["Bàn phím", "P phát, −/=/0 tốc độ, Backspace/J lùi/tới, F1/F2/F3 tầm nhìn, V/F, O/X bảng, C công nghệ, " +
@@ -583,22 +606,24 @@ export class Viewer {
   // ---- máy quay tự động (như phím A của trình xem máy tính) -----------------------------------------------
   // Luôn khoá theo một unit trong tầm nhìn đang xem: nơi đang giao tranh (unit / nhà mất máu, unit chết) -> công trình
   // lớn đang xây -> nhà (House) đang xây -> dân đang làm việc. Tự kéo máy quay / chạm chọn unit thì tắt.
-  setAutoCam(on) {
+  setAutoCam(on, quiet) {
     this.autoCam = !!on;
     this._dir = { hp: new Map(), heat: new Map(), t: -1, lockAt: 0, rank: -1, uid: null, label: "" };
     if (on) { this._hudT = 0; this._hudDirty = true; }
-    this.toast(on ? "Máy quay tự động: BẬT (giao tranh → xây nhà → dân làm việc)" : "Máy quay tự động: tắt", 2200);
+    if (!quiet) this.toast(on ? "Máy quay tự động: BẬT (giao tranh → xây nhà → dân làm việc)" : "Máy quay tự động: tắt", 2200);
     this._updateUi();
   }
 
-  _takeCamera() { if (this.autoCam) this.setAutoCam(false); }
+  _takeCamera() { this.fly = null; if (this.autoCam) this.setAutoCam(false); }
 
   _dirLock(uid, owner, rank, label) {
     const D = this._dir;
     if (D.uid !== uid) {
       this.sel = { kind: "u", uid, owner };
       this.follow = true;
-      this.cam.zoom = Math.max(this.cam.zoom, 0.55 * this.dpr);
+      // chuyển cảnh: máy quay lướt từ chỗ đang đứng sang unit mới (không nhảy), zoom cũng đổi dần
+      const z1 = Math.max(this.cam.zoom, 0.55 * this.dpr);
+      this.fly = { x: this.cam.x, y: this.cam.y, z0: this.cam.zoom, z1, t0: performance.now(), dur: FLY_MS };
       this._hudDirty = true;
       if (D.label !== label) this.toast("Tự động: " + label, 1400);
     }
@@ -625,7 +650,7 @@ export class Viewer {
       if (!def) continue;
       const utype = def[1], cls = def[2], h = row[2], status = row[3];
       if (utype !== 70 && utype !== 80) continue;
-      if (st.owner[i] <= 0) continue;
+      if (st.owner[i] <= 0 || cls === 1) continue;              // không bám di tích / đồ cổ (lớp 1) như bản máy tính
       hp.set(uid, h);
       const ph = D.hp.get(uid);
       const alive = status < 3 && h > 0;
@@ -678,7 +703,7 @@ export class Viewer {
     const players = M.players;
     const ntech = idx => this.hud.done(idx, tms).length;
     if (this.show.score) {
-      const cols = this.scoreMode === 0 ? ECO_COLS : MIL_COLS;
+      const cols = this.scoreMode === 0 ? ECO_COLS : milCols(M.version || 2);
       const head = cols.map(([label]) => label.startsWith("res")
         ? `<th>${this.icons.res(+label.slice(3))}</th>` : `<th>${esc(label)}</th>`).join("");
       let body = "";
@@ -807,9 +832,17 @@ export class Viewer {
 
   _followCam() {
     const p = this.sel && this._unitPos(this.sel);
-    if (!p) return;
-    const [ax, ay] = this._anchor(...p);
-    if (Math.abs(ax - this.cam.x) + Math.abs(ay - this.cam.y) > 0.5) { this.cam.x = ax; this.cam.y = ay; this._clamp(); }
+    if (!p) { this.fly = null; return; }
+    let [ax, ay] = this._anchor(...p);
+    const F = this.fly;
+    if (F) {                       // đang lướt sang mục tiêu mới: nội suy từ điểm xuất phát tới vị trí hiện tại của unit
+      const k = Math.min(1, (performance.now() - F.t0) / F.dur);
+      const e = k * k * (3 - 2 * k);
+      ax = F.x + (ax - F.x) * e; ay = F.y + (ay - F.y) * e;
+      this.cam.zoom = F.z0 + (F.z1 - F.z0) * e;
+      if (k >= 1) this.fly = null;
+    }
+    if (Math.abs(ax - this.cam.x) + Math.abs(ay - this.cam.y) > 0.5 || F) { this.cam.x = ax; this.cam.y = ay; this._clamp(); }
   }
 
   _placeMark() {
