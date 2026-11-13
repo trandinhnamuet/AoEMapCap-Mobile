@@ -36,6 +36,9 @@ const HEAD_MS = 90000;          // yêu cầu qua trạm không có khung nào: 
 const RETRY_MS = 120000;        // chờ máy tính chuẩn bị / tải trận: lỗi kết nối liên tiếp quá lâu mới báo lỗi
 const fatal = e => { e.fatal = true; return e; };     // lỗi không thử lại (máy tính trả lỗi rõ ràng)
 const sleep = ms => new Promise(res => setTimeout(res, ms));
+// tiến độ tải: % khi biết tổng dung lượng, không thì số MB đã nhận (WebView có lúc không đưa Content-Length)
+const pct = (f, got) => f === null || f === undefined ? (got / 1e6).toFixed(1).replace(".", ",") + " MB" : Math.round(f * 100) + "%";
+const mark = k => { const T = window.aoeTimes; if (T) T[k] = Math.round(performance.now() - T.t0); };   // đo các bước mở trận
 
 // bản app Android mới nhất: Release "latest" của repo app (tag v<N>, N = versionCode); null nếu không hỏi được
 async function latestApp() {
@@ -277,7 +280,7 @@ class Source {
       const { done, value } = await reader.read();
       if (done) break;
       parts.push(value); got += value.length;
-      if (onProgress && total) onProgress(got / total);
+      if (onProgress) onProgress(total ? got / total : null, got);
     }
     return await new Blob(parts).arrayBuffer();
   }
@@ -300,7 +303,7 @@ class Source {
         : "Máy tính đang chuẩn bị trận… " + Math.round((j.progress || 0) * 100) + "%");
       await sleep(1000);
     }
-    return this._retry(() => this._download(url, f => onStatus && onStatus("Đang tải trận… " + Math.round(f * 100) + "%")),
+    return this._retry(() => this._download(url, (f, got) => onStatus && onStatus("Đang tải trận… " + pct(f, got))),
       onStatus, retry);
   }
   // bản đã lưu trên điện thoại (đủ phiên bản), null nếu chưa có
@@ -317,9 +320,10 @@ class Source {
       if (b) return b;
     }
     let buf;
+    onStatus && onStatus("Đang tải dữ liệu game từ máy tính (một lần)…");
     try {
       buf = await this._retry(() => this._download("api/gamedata",
-        f => onStatus && onStatus("Đang tải dữ liệu game từ máy tính (một lần)… " + Math.round(f * 100) + "%")), onStatus);
+        (f, got) => onStatus && onStatus("Đang tải dữ liệu game từ máy tính (một lần)… " + pct(f, got))), onStatus);
     } catch (e) { if (e.status === 404) return null; throw e; }
     if (this.store) await this.store.put(GAMEDATA_KEY, buf);
     return buf;
@@ -330,11 +334,14 @@ class Source {
     if (!LiveBuild.supported()) return null;
     const gd = await this.gamedata(onStatus);
     if (!gd) return null;
+    mark("gamedata");
     let rec;
+    onStatus && onStatus("Đang tải trận…");
     try {
       rec = await this._retry(() => this._download("api/rec?f=" + encodeURIComponent(file),
-        f => onStatus && onStatus("Đang tải trận… " + Math.round(f * 100) + "%")), onStatus);
+        (f, got) => onStatus && onStatus("Đang tải trận… " + pct(f, got))), onStatus);
     } catch (e) { if (e.status === 404) return null; throw e; }
+    mark("rec");
     onStatus && onStatus("Đang dựng trận trên điện thoại…");
     return new LiveBuild({ rec, sprites: packBuf.slice(0), gamedata: gd.slice(0), info, file,
       onProgress: p => onStatus && onStatus("Đang dựng trận trên điện thoại… " + Math.round(p.pos * 100) + "%") });
@@ -358,8 +365,9 @@ class Source {
       const b = await this.store.get("/s/sprites");
       if (b) return b;
     }
+    onStatus && onStatus("Đang tải hình game từ máy tính (một lần)…");
     const buf = await this._retry(() => this._download("api/sprites",
-      f => onStatus && onStatus("Đang tải hình game từ máy tính (một lần)… " + Math.round(f * 100) + "%")), onStatus);
+      (f, got) => onStatus && onStatus("Đang tải hình game từ máy tính (một lần)… " + pct(f, got))), onStatus);
     if (this.store) await this.store.put("/s/sprites", buf);
     return buf;
   }
@@ -532,9 +540,12 @@ async function openMatch(src, file, info, selftest) {
   const status = $("#v-status");
   status.hidden = false;
   const say = t => { status.textContent = t; };
+  window.aoeTimes = { t0: performance.now() };       // ms từ lúc mở trận tới: sprites, gamedata, rec, first, viewer
+  say("Đang mở trận…");
   try {
     if (!packPromise) packPromise = src.sprites(say).then(b => ({ buf: b, pack: new SpritePack(b) }));
     const { buf: packBuf, pack } = await packPromise;
+    mark("sprites");
     let buf = await src.cached(file), live = null;
     if (!buf) {
       // điện thoại tự dựng từ file ghi trận gốc; không dùng được (hoặc bộ dựng lỗi trước khi có hình) thì cách cũ
@@ -543,7 +554,7 @@ async function openMatch(src, file, info, selftest) {
           try { info = ((await src.list()).find(x => x.file === file) || {}).info || null; } catch { /* không có cũng được */ }
         }
         live = await src.live(file, info, packBuf, say);
-        if (live) buf = await live.first;
+        if (live) { buf = await live.first; mark("first"); }
       } catch (e) {
         console.warn("tự dựng trên điện thoại không được, nhờ máy tính chuyển:", e);
         if (live) live.cancel();
@@ -555,6 +566,7 @@ async function openMatch(src, file, info, selftest) {
     const v = new Viewer($("#viewer"), buf, pack,
       { onError: e => say("Lỗi: " + e.message), build: live ? live.firstState : null });
     await v.init();
+    mark("viewer");
     status.hidden = true;
     window.aoeViewer = v;
     window.aoeLive = live;
@@ -562,7 +574,9 @@ async function openMatch(src, file, info, selftest) {
       live.onProgress = p => v.buildProgress(p.pos);
       live.onSnapshot = (b, st) => v.swap(b, st);
       live.done.then(async final => {
+        mark("built");
         if (src.store) await src.store.saveMatch(file, final, info);
+        mark("saved");
         document.body.dataset.built = "1";
       }).catch(e => { console.error(e); v.toast("Dựng trận dở dang: " + e.message, 6000); });
       window.addEventListener("pagehide", () => live.cancel(), { once: true });

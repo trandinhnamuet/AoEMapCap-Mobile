@@ -168,6 +168,7 @@ public class MainActivity extends Activity {
             }
             InputStream in = code >= 400 ? c.getErrorStream() : c.getInputStream();
             if (in == null) in = new ByteArrayInputStream(new byte[0]);
+            in = new java.io.BufferedInputStream(in, 1 << 18);     // WebView đọc từng mẩu nhỏ: đệm 256 KB cho file hàng chục MB
             String type = c.getContentType();
             String mime = type == null ? "application/octet-stream" : type.split(";")[0].trim();
             Map<String, String> headers = new HashMap<>();
