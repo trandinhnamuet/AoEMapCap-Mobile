@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Icon y hệt AoE-MapCap trên máy tính (assets/app.ico, logo AoE Hà Nội): logo tròn trên nền đen. Lớp trước là logo
+     đặt vừa vùng giữa 72dp mà launcher hiển thị; máy không dùng icon thích ứng lấy mipmap-*/ic_launcher.png. -->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
-    <background android:drawable="@color/bg" />
-    <foreground android:drawable="@drawable/ic_launcher_fg" />
+    <background android:drawable="@color/icon_bg" />
+    <foreground android:drawable="@mipmap/ic_launcher_fg" />
 </adaptive-icon>
